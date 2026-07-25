@@ -1,4 +1,4 @@
 @echo off
 chcp 65001 > nul
-python run_tests.py
+python main.py --source online
 pause

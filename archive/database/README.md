@@ -1,3 +1,16 @@
-# database
+# SQLite-архів
 
-Запустіть `python main.py --init-archive`, щоб створити локальну базу `hydro_archive.sqlite`.
+Створення або оновлення схеми:
+
+```bash
+python main.py --init-archive
+```
+
+Робоча база `hydro_archive.sqlite` створюється автоматично під час першого імпорту та не додається до Git.
+
+Основні таблиці:
+
+- `stations` — довідник постів;
+- `imports` — унікальні початкові файли та їхні SHA-256 хеші;
+- `observations` — нормалізовані параметри часових рядів;
+- `schema_meta` — версія схеми.

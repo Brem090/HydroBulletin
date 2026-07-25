@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Dict, Tuple
-
 from .models import Station
 
 
-LVIV_STATIONS: Tuple[Station, ...] = (
+LVIV_STATIONS: tuple[Station, ...] = (
     Station("81015", "Дністер — Стрілки"),
     Station("81017", "Дністер — Самбір"),
     Station("81028", "Дністер — Розділ"),
@@ -41,6 +39,6 @@ LVIV_STATIONS: Tuple[Station, ...] = (
     Station("79473", "Стир — Щуровичі"),
 )
 
-STATIONS_BY_INDEX: Dict[str, Station] = {
+STATIONS_BY_INDEX: dict[str, Station] = {
     station.index: station for station in LVIV_STATIONS
 }

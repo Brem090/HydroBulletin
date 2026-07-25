@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from datetime import datetime
 
 
 @dataclass(frozen=True)
 class Station:
-    """Гідрологічний пост, який підтримує демонстраційна версія."""
+    """Гідрологічний пост із довідника системи."""
 
     index: str
     name: str
@@ -18,17 +18,25 @@ class Station:
 class HydroObservation:
     """Нормалізований запис одного гідрологічного поста.
 
-    На першому тижні модель зберігає ранковий рівень, добову зміну та
-    рівень о 20:00 попередньої доби. Інші показники будуть додані далі.
+    Модель об'єднує значення одного кодованого запису. Під час запису до
+    SQLite вона розкладається на окремі вимірювання за схемою
+    ``пост / параметр / час / значення / якість``.
     """
 
     index: str
     station_name: str
-    level: Optional[int]
-    change: Optional[int]
-    evening_level: Optional[int]
+    level: int | None
+    change: int | None
+    evening_level: int | None
     raw_record: str
     quality_status: str = "NOT_CHECKED"
+    water_temperature_c: float | None = None
+    precipitation_mm: float | None = None
+    discharge_m3_s: float | None = None
+    observed_at: datetime | None = None
+    evening_observed_at: datetime | None = None
+    source_type: str = "unknown"
+    source_file: str = ""
 
     @property
     def level_text(self) -> str:
@@ -46,4 +54,121 @@ class HydroObservation:
     def evening_level_text(self) -> str:
         """Рівень о 20:00 попередньої доби у зручному для таблиці вигляді."""
 
-        return "немає даних" if self.evening_level is None else f"{self.evening_level} см"
+        if self.evening_level is None:
+            return "немає даних"
+        return f"{self.evening_level} см"
+
+    @staticmethod
+    def _number_text(value: float | None, digits: int = 3) -> str:
+        if value is None:
+            return "немає даних"
+        if float(value).is_integer():
+            return str(int(value))
+        return f"{value:.{digits}f}".rstrip("0").rstrip(".").replace(".", ",")
+
+    @property
+    def temperature_text(self) -> str:
+        value = self._number_text(self.water_temperature_c, digits=1)
+        return value if self.water_temperature_c is None else f"{value} °C"
+
+    @property
+    def precipitation_text(self) -> str:
+        value = self._number_text(self.precipitation_mm, digits=1)
+        return value if self.precipitation_mm is None else f"{value} мм"
+
+    @property
+    def discharge_text(self) -> str:
+        value = self._number_text(self.discharge_m3_s, digits=3)
+        return value if self.discharge_m3_s is None else f"{value} м³/с"
+
+
+@dataclass(frozen=True)
+class HydroMeasurement:
+    """Одне значення часового ряду для збереження у SQLite."""
+
+    station_index: str
+    station_name: str
+    observed_at: datetime
+    parameter_code: str
+    value: float | None
+    unit: str
+    quality_status: str
+    source_type: str
+    source_file: str
+    raw_record: str
+
+
+def observation_measurements(
+    observation: HydroObservation,
+) -> tuple[HydroMeasurement, ...]:
+    """Розкладає кодований запис поста на нормалізовані вимірювання."""
+
+    if observation.observed_at is None:
+        return ()
+
+    common = {
+        "station_index": observation.index,
+        "station_name": observation.station_name,
+        "quality_status": observation.quality_status,
+        "source_type": observation.source_type,
+        "source_file": observation.source_file,
+        "raw_record": observation.raw_record,
+    }
+    measurements: list[HydroMeasurement] = []
+
+    # NIL-запис зберігається як відсутнє значення рівня.
+    if observation.level is not None or observation.quality_status == "MISSING":
+        measurements.append(
+            HydroMeasurement(
+                observed_at=observation.observed_at,
+                parameter_code="WATER_LEVEL",
+                value=None if observation.level is None else float(observation.level),
+                unit="cm",
+                **common,
+            )
+        )
+
+    if observation.change is not None:
+        measurements.append(
+            HydroMeasurement(
+                observed_at=observation.observed_at,
+                parameter_code="DAILY_CHANGE",
+                value=float(observation.change),
+                unit="cm",
+                **common,
+            )
+        )
+
+    if (
+        observation.evening_level is not None
+        and observation.evening_observed_at is not None
+    ):
+        measurements.append(
+            HydroMeasurement(
+                observed_at=observation.evening_observed_at,
+                parameter_code="WATER_LEVEL",
+                value=float(observation.evening_level),
+                unit="cm",
+                **common,
+            )
+        )
+
+    optional_values = (
+        ("WATER_TEMPERATURE", observation.water_temperature_c, "degC"),
+        ("PRECIPITATION", observation.precipitation_mm, "mm"),
+        ("DISCHARGE", observation.discharge_m3_s, "m3/s"),
+    )
+    for parameter_code, value, unit in optional_values:
+        if value is None:
+            continue
+        measurements.append(
+            HydroMeasurement(
+                observed_at=observation.observed_at,
+                parameter_code=parameter_code,
+                value=float(value),
+                unit=unit,
+                **common,
+            )
+        )
+
+    return tuple(measurements)
