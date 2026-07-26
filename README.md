@@ -76,7 +76,7 @@ python main.py --source online --date 19.07.2026 --online-types ZRUR52
 python run_tests.py
 ```
 
-За замовчуванням `python run_tests.py` запускає повний набір автоматизованих перевірок і показує компактний підсумок за основними групами тестів.  Для детального перегляду кожного тесту: python `python run_tests.py --verbose`
+За замовчуванням `python run_tests.py` запускає повний набір автоматизованих перевірок і показує компактний підсумок за основними групами тестів.  Для детального перегляду кожного тесту використовується команда python `run_tests.py --verbose`
 Також підтримується команда `python -m unittest discover -s tests -v`.
 
 У Windows можна використати `run_demo.bat`, `run_online_demo.bat`, `run_archive_demo.bat` і `run_tests.bat`.
