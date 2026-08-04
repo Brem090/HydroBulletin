@@ -1,4 +1,4 @@
-"""Tests for decoded measurements and observation times."""
+"""Перевірки декодованих вимірювань і часу спостережень."""
 
 from __future__ import annotations
 

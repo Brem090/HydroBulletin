@@ -37,6 +37,7 @@ class HydroObservation:
     evening_observed_at: datetime | None = None
     source_type: str = "unknown"
     source_file: str = ""
+    quality_message: str = ""
 
     @property
     def level_text(self) -> str:
@@ -96,6 +97,7 @@ class HydroMeasurement:
     source_type: str
     source_file: str
     raw_record: str
+    quality_message: str = ""
 
 
 def observation_measurements(
@@ -113,6 +115,7 @@ def observation_measurements(
         "source_type": observation.source_type,
         "source_file": observation.source_file,
         "raw_record": observation.raw_record,
+        "quality_message": observation.quality_message,
     }
     measurements: list[HydroMeasurement] = []
 

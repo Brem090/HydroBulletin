@@ -1,4 +1,4 @@
-"""Довідник гідрологічних постів Львівської області."""
+"""Довідники гідрологічних постів і метеостанцій HydroBulletin."""
 
 from __future__ import annotations
 
@@ -39,6 +39,95 @@ LVIV_STATIONS: tuple[Station, ...] = (
     Station("79473", "Стир — Щуровичі"),
 )
 
-STATIONS_BY_INDEX: dict[str, Station] = {
+IF_STATIONS: tuple[Station, ...] = (
+    Station("81033", "Дністер — Галич"),
+    Station("81036", "Дністер — Нижнів"),
+    Station("81041", "Дністер — Заліщики"),
+    Station("81140", "Свіча — Мислівка"),
+    Station("81151", "Лужанка — Гошів"),
+    Station("81152", "Сукель — Тисів"),
+    Station("81156", "Свір — Букачівці"),
+    Station("81161", "Лімниця — Осмолода"),
+    Station("81169", "Лімниця — Перевозець"),
+    Station("81172", "Чечва — Спас"),
+    Station("81178", "Луква — Боднарів"),
+    Station("81184", "Гнила Липа — Більшівці"),
+    Station("81191", "Бистриця Надвірнянська — Пасічна"),
+    Station("81471", "Бистриця Надвірнянська — Черніїв"),
+    Station("81197", "Ворона — Тисмениця"),
+    Station("81199", "Бистриця Солотвинська — Гута"),
+    Station("81203", "Бистриця Солотвинська — Івано-Франківськ"),
+)
+
+LEFT_DNISTER_STATIONS: tuple[Station, ...] = (
+    Station("81041", "Дністер — Заліщики"),
+    Station("81205", "Золота Липа — Бережани"),
+    Station("81206", "Золота Липа — Задарів"),
+    Station("81209", "Коропець — Підгайці"),
+    Station("81210", "Коропець — Коропець"),
+    Station("81213", "Стрипа — Каплинці"),
+    Station("81215", "Стрипа — Бучач"),
+    Station("81219", "Серет — Велика Березовиця"),
+    Station("81225", "Серет — Чортків"),
+    Station("81230", "Нічлава — Стрілківці"),
+    Station("81232", "Збруч — Волочиськ"),
+    Station("81236", "Збруч — Завалля"),
+    Station("81241", "Жванчик — Кугаївці"),
+    Station("81242", "Жванчик — Ластівці"),
+    Station("81243", "Смотрич — Купин"),
+    Station("81244", "Смотрич — Цибулівка"),
+    Station("81245", "Мукша — Мала Слобідка"),
+    Station("81249", "Студениця — Голозубинці"),
+    Station("81250", "Ушиця — Зіньків"),
+    Station("81251", "Ушиця — Тимків"),
+    Station("81254", "Калюс — Нова Ушиця"),
+    Station("81257", "Лядова — Жеребилівка"),
+    Station("81261", "Мурафа — Кудіївці"),
+    Station("81267", "Марківка — Підлісівка"),
+)
+
+METEO_STATIONS: tuple[Station, ...] = (
+    Station("33288", "Метеостанція Кам’янка-Бузька"),
+    Station("33398", "Метеостанція Дрогобич"),
+    Station("33409", "Метеостанція Бережани"),
+    Station("33511", "Метеостанція Турка"),
+    Station("33513", "Метеостанція Стрий"),
+    Station("33516", "Метеостанція Славське"),
+    Station("33526", "Метеостанція Івано-Франківськ"),
+    Station("33536", "Метеостанція Чортків"),
+    Station("33548", "Метеостанція Кам’янець-Подільський"),
+    Station("33557", "Метеостанція Нова Ушиця"),
+)
+
+
+def _unique_stations(*groups: tuple[Station, ...]) -> tuple[Station, ...]:
+    result: list[Station] = []
+    seen: set[str] = set()
+    for group in groups:
+        for station in group:
+            if station.index in seen:
+                continue
+            seen.add(station.index)
+            result.append(station)
+    return tuple(result)
+
+
+HYDRO_STATIONS: tuple[Station, ...] = _unique_stations(
+    LVIV_STATIONS,
+    IF_STATIONS,
+    LEFT_DNISTER_STATIONS,
+)
+ALL_STATIONS: tuple[Station, ...] = _unique_stations(
+    HYDRO_STATIONS,
+    METEO_STATIONS,
+)
+
+LVIV_STATIONS_BY_INDEX: dict[str, Station] = {
     station.index: station for station in LVIV_STATIONS
+}
+STATIONS_BY_INDEX: dict[str, Station] = {
+    station.index: station for station in HYDRO_STATIONS
+}
+ALL_STATIONS_BY_INDEX: dict[str, Station] = {
+    station.index: station for station in ALL_STATIONS
 }

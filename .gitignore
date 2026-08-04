@@ -7,6 +7,8 @@ venv/
 *.sqlite3
 archive/raw/**/*.txt
 artifacts/
+output/
+work/
 dist/
 build/
 *.spec

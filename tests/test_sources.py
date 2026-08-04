@@ -1,4 +1,4 @@
-"""Tests for online settings and controlled downloads."""
+"""Перевірки онлайн-налаштувань та отримання даних."""
 
 from __future__ import annotations
 
@@ -7,7 +7,10 @@ import unittest
 from pathlib import Path
 
 from hydrobulletin.sources import (
+    ArchiveDataSource,
     DataSourceError,
+    FallbackDataSource,
+    LocalFileSource,
     OnlineConnection,
     OnlineDataSource,
     OnlineSourceSettings,
@@ -130,13 +133,80 @@ class DownloadTests(unittest.TestCase):
     def test_http_error(self) -> None:
         opener = FakeOpener(FakeResponse(b"error", status=500))
         source = OnlineDataSource(
-            OnlineConnection("https://example.test/armua", "user", "pass"),
+            OnlineConnection(
+                "https://example.test/armua",
+                "user",
+                "pass",
+                max_attempts=1,
+                retry_delay_seconds=0,
+            ),
             "12.07.2026",
             "ZRUR52",
             opener=opener,
         )
         with self.assertRaises(DataSourceError):
             source.load_text()
+
+    def test_retries_temporary_response(self) -> None:
+        html = "<td>81015 12081 10186 20031 =</td>"
+        opener = FakeOpener(
+            FakeResponse(b"temporary", status=500),
+            FakeResponse(b"index"),
+            FakeResponse(html.encode("koi8-u")),
+        )
+        source = OnlineDataSource(
+            OnlineConnection(
+                "https://example.test/armua",
+                "user",
+                "pass",
+                max_attempts=2,
+                retry_delay_seconds=0,
+            ),
+            "12.07.2026",
+            "ZRUR52",
+            opener=opener,
+        )
+
+        self.assertIn("81015 12081", source.load_text())
+        self.assertEqual(len(opener.requests), 3)
+
+
+class FallbackAndArchiveTests(unittest.TestCase):
+    def test_fallback_uses_next_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir)
+            available = folder / "available.txt"
+            available.write_text("дані", encoding="utf-8")
+            source = FallbackDataSource(
+                (
+                    LocalFileSource(folder / "missing.txt"),
+                    LocalFileSource(available),
+                )
+            )
+
+            self.assertEqual(source.load_text(), "дані")
+            self.assertEqual(source.source_type, "local")
+            self.assertEqual(source.source_name, str(available))
+
+    def test_archive_uses_latest_version(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            folder = Path(tmp_dir) / "2026" / "07"
+            folder.mkdir(parents=True)
+            (folder / "2026-07-12_ZRUR52.txt").write_text(
+                "перша",
+                encoding="utf-8",
+            )
+            newest = folder / "2026-07-12_ZRUR52_3.txt"
+            newest.write_text("третя", encoding="utf-8")
+
+            source = ArchiveDataSource(
+                Path(tmp_dir),
+                "12.07.2026",
+                "ZRUR52",
+            )
+
+            self.assertEqual(source.load_text(), "третя")
+            self.assertEqual(source.path, newest)
 
 
 if __name__ == "__main__":

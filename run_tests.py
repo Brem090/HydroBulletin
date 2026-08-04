@@ -1,4 +1,4 @@
-"""Run the HydroBulletin test suite in compact or verbose mode."""
+"""Запуск перевірок HydroBulletin у стислому або докладному режимі."""
 
 from __future__ import annotations
 
@@ -14,12 +14,16 @@ GROUP_LABELS = {
     "test_archive_pipeline": "Архів і конвеєр",
     "test_decoder": "Базове декодування",
     "test_measurements": "Гідрологічні параметри",
+    "test_meteorology": "SYNOP-опади та мапінг",
+    "test_quality": "Первинний контроль якості",
     "test_sources": "Джерела даних та онлайн-завантаження",
+    "test_gui": "Інтерфейс і масштабування",
+    "test_week3_integration": "Пакетний сценарій і Word-бюлетені",
 }
 
 
 def iter_tests(suite: unittest.TestSuite) -> Iterable[unittest.TestCase]:
-    """Yield individual test cases from a nested unittest suite."""
+    """Послідовно повертає окремі перевірки з набору unittest."""
     for item in suite:
         if isinstance(item, unittest.TestSuite):
             yield from iter_tests(item)
@@ -28,7 +32,7 @@ def iter_tests(suite: unittest.TestSuite) -> Iterable[unittest.TestCase]:
 
 
 def load_test_groups(project_dir: Path) -> OrderedDict[str, unittest.TestSuite]:
-    """Discover tests and group them by test module."""
+    """Знаходить перевірки та групує їх за модулями."""
     discovered = unittest.defaultTestLoader.discover(
         str(project_dir / "tests"),
         pattern="test_*.py",
@@ -46,7 +50,7 @@ def load_test_groups(project_dir: Path) -> OrderedDict[str, unittest.TestSuite]:
 
 
 def print_failure_details(result: unittest.TestResult) -> None:
-    """Print details only for failed tests and errors."""
+    """Виводить подробиці лише для невдалих перевірок."""
     problems = [
         ("ПОМИЛКА ТЕСТУ", test, traceback)
         for test, traceback in result.failures
@@ -62,7 +66,7 @@ def print_failure_details(result: unittest.TestResult) -> None:
 
 
 def run_compact(project_dir: Path) -> int:
-    """Run tests with a compact, presentation-friendly summary."""
+    """Запускає перевірки зі стислим підсумком."""
     groups = load_test_groups(project_dir)
     total_run = 0
     total_passed = 0
@@ -105,7 +109,7 @@ def run_compact(project_dir: Path) -> int:
 
 
 def run_verbose(project_dir: Path) -> int:
-    """Run tests with the standard detailed unittest output."""
+    """Запускає перевірки зі стандартним докладним виведенням unittest."""
     suite = unittest.defaultTestLoader.discover(
         str(project_dir / "tests"),
         pattern="test_*.py",

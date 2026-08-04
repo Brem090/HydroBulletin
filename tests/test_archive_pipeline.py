@@ -1,4 +1,4 @@
-"""Tests for raw archiving, SQLite storage, and the import pipeline."""
+"""Перевірки raw-архіву, SQLite та конвеєра імпорту."""
 
 from __future__ import annotations
 
@@ -61,7 +61,7 @@ class RawArchiveTests(unittest.TestCase):
 
 
 class SchemaTests(unittest.TestCase):
-    def test_schema_v2(self) -> None:
+    def test_schema_v3(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "archive.sqlite"
             initialize_archive(db_path, LVIV_STATIONS)
@@ -77,13 +77,14 @@ class SchemaTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            self.assertEqual(version, "2")
+            self.assertEqual(version, "3")
             self.assertTrue(
                 {
                     "observed_at",
                     "parameter_code",
                     "value",
                     "quality_status",
+                    "quality_message",
                     "source_file",
                 }
                 <= columns
@@ -166,6 +167,11 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(
                 all(str(row["source_file"]).startswith("raw/2026/07/") for row in rows)
             )
+            change = next(
+                row for row in rows if row["parameter_code"] == "DAILY_CHANGE"
+            )
+            self.assertEqual(change["quality_status"], "SUSPICIOUS")
+            self.assertIn("попередньої доби", change["quality_message"])
             level_times = {
                 row["observed_at"]
                 for row in rows

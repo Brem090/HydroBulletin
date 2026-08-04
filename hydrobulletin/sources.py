@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import Any, Mapping, Protocol
+from typing import Any, Callable, Mapping, Protocol, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import (
@@ -17,6 +18,8 @@ from urllib.request import (
     Request,
     build_opener,
 )
+
+from .timeutils import ukraine_local_to_utc
 
 
 SUPPORTED_MESSAGE_TYPES = ("ZRUR52", "ZRUR53", "ZRUR71")
@@ -67,6 +70,10 @@ class LocalFileSource:
     def source_name(self) -> str:
         return str(self.path)
 
+    @property
+    def source_type(self) -> str:
+        return "local"
+
 
 @dataclass(frozen=True)
 class OnlineConnection:
@@ -76,6 +83,8 @@ class OnlineConnection:
     username: str
     password: str
     timeout_seconds: float = 40.0
+    max_attempts: int = 3
+    retry_delay_seconds: float = 1.5
 
 
 @dataclass(frozen=True)
@@ -86,6 +95,8 @@ class OnlineSourceSettings:
     username_variable: str = "HYDRO_SOURCE_USERNAME"
     password_variable: str = "HYDRO_SOURCE_PASSWORD"
     timeout_variable: str = "HYDRO_SOURCE_TIMEOUT"
+    attempts_variable: str = "HYDRO_SOURCE_ATTEMPTS"
+    retry_delay_variable: str = "HYDRO_SOURCE_RETRY_DELAY"
 
     def load_connection(
         self,
@@ -104,6 +115,8 @@ class OnlineSourceSettings:
             self.username_variable,
             self.password_variable,
             self.timeout_variable,
+            self.attempts_variable,
+            self.retry_delay_variable,
         ):
             if environment.get(key):
                 values[key] = environment[key]
@@ -124,7 +137,34 @@ class OnlineSourceSettings:
         if timeout <= 0:
             raise DataSourceError("HYDRO_SOURCE_TIMEOUT має бути більшим за нуль.")
 
-        return OnlineConnection(base_url, username, password, timeout)
+        try:
+            attempts = int(values.get(self.attempts_variable, "3") or "3")
+        except ValueError as exc:
+            raise DataSourceError("HYDRO_SOURCE_ATTEMPTS має бути цілим числом.") from exc
+        if attempts < 1 or attempts > 10:
+            raise DataSourceError("HYDRO_SOURCE_ATTEMPTS має бути від 1 до 10.")
+
+        try:
+            retry_delay = float(
+                values.get(self.retry_delay_variable, "1.5") or "1.5"
+            )
+        except ValueError as exc:
+            raise DataSourceError(
+                "HYDRO_SOURCE_RETRY_DELAY має бути числом."
+            ) from exc
+        if retry_delay < 0:
+            raise DataSourceError(
+                "HYDRO_SOURCE_RETRY_DELAY не може бути від'ємним."
+            )
+
+        return OnlineConnection(
+            base_url,
+            username,
+            password,
+            timeout,
+            attempts,
+            retry_delay,
+        )
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -196,6 +236,70 @@ class OpenerProtocol(Protocol):
     def open(self, request: Request, timeout: float) -> Any:
         ...
 
+
+def _response_status(response: Any) -> int:
+    status = getattr(response, "status", 200)
+    return 200 if status is None else int(status)
+
+
+def _request_bytes_with_retries(
+    opener: OpenerProtocol,
+    request: Request,
+    connection: OnlineConnection,
+    description: str,
+    *,
+    sleep: Callable[[float], None] = time.sleep,
+) -> bytes:
+    """Виконує запит із повторенням лише тимчасових помилок."""
+
+    last_error: Exception | None = None
+    for attempt in range(1, connection.max_attempts + 1):
+        try:
+            with opener.open(
+                request,
+                timeout=connection.timeout_seconds,
+            ) as response:
+                status = _response_status(response)
+                if 200 <= status < 300:
+                    return response.read()
+                if status in (401, 403):
+                    raise DataSourceError(
+                        f"{description}: доступ відхилено (HTTP {status}); "
+                        "перевірте логін і пароль."
+                    )
+                if status != 429 and status < 500:
+                    raise DataSourceError(
+                        f"{description}: сайт повернув HTTP {status}."
+                    )
+                last_error = DataSourceError(
+                    f"{description}: тимчасова відповідь HTTP {status}."
+                )
+        except HTTPError as exc:
+            if exc.code in (401, 403):
+                raise DataSourceError(
+                    f"{description}: доступ відхилено (HTTP {exc.code}); "
+                    "перевірте логін і пароль."
+                ) from exc
+            if exc.code != 429 and exc.code < 500:
+                raise DataSourceError(
+                    f"{description}: сайт повернув HTTP {exc.code}."
+                ) from exc
+            last_error = exc
+        except (URLError, TimeoutError, OSError) as exc:
+            last_error = exc
+
+        if attempt < connection.max_attempts:
+            delay = connection.retry_delay_seconds * (2 ** (attempt - 1))
+            if delay:
+                sleep(delay)
+
+    detail = f": {last_error}" if last_error else ""
+    raise DataSourceError(
+        f"{description}: не вдалося отримати дані після "
+        f"{connection.max_attempts} спроб{detail}"
+    ) from last_error
+
+
 @dataclass
 class OnlineDataSource:
     """Отримує один із файлів ZRUR52/ZRUR53/ZRUR71 із робочого сайту."""
@@ -205,6 +309,7 @@ class OnlineDataSource:
     message_type: str
     opener: OpenerProtocol | None = None
     response_encoding: str = "koi8-u"
+    sleep: Callable[[float], None] = time.sleep
 
     def __post_init__(self) -> None:
         self.message_type = self.message_type.upper()
@@ -218,6 +323,10 @@ class OnlineDataSource:
     def source_name(self) -> str:
         return f"{self.message_type}@{self.connection.base_url}"
 
+    @property
+    def source_type(self) -> str:
+        return "online"
+
     def _build_opener(self):
         password_manager = HTTPPasswordMgrWithDefaultRealm()
         password_manager.add_password(
@@ -227,12 +336,6 @@ class OnlineDataSource:
             self.connection.password,
         )
         return build_opener(HTTPBasicAuthHandler(password_manager))
-
-    @staticmethod
-    def _check_status(response) -> None:
-        status = getattr(response, "status", 200)
-        if status is not None and not 200 <= int(status) < 300:
-            raise DataSourceError(f"Сайт повернув HTTP-статус {status}.")
 
     def load_text(self) -> str:
         base_url = self.connection.base_url.rstrip("/")
@@ -257,31 +360,28 @@ class OnlineDataSource:
         }
         opener = self.opener or self._build_opener()
 
-        try:
-            index_request = Request(index_url, headers={"User-Agent": "Mozilla/5.0"})
-            with opener.open(
-                index_request,
-                timeout=self.connection.timeout_seconds,
-            ) as response:
-                self._check_status(response)
-                response.read()
+        index_request = Request(index_url, headers={"User-Agent": "Mozilla/5.0"})
+        _request_bytes_with_retries(
+            opener,
+            index_request,
+            self.connection,
+            "Підключення до ГЦСТ",
+            sleep=self.sleep,
+        )
 
-            search_request = Request(
-                show_url,
-                data=body,
-                headers=headers,
-                method="POST",
-            )
-            with opener.open(
-                search_request,
-                timeout=self.connection.timeout_seconds,
-            ) as response:
-                self._check_status(response)
-                payload = response.read()
-        except (HTTPError, URLError, TimeoutError, OSError) as exc:
-            raise DataSourceError(
-                f"Не вдалося завантажити {self.message_type}: {exc}"
-            ) from exc
+        search_request = Request(
+            show_url,
+            data=body,
+            headers=headers,
+            method="POST",
+        )
+        payload = _request_bytes_with_retries(
+            opener,
+            search_request,
+            self.connection,
+            f"Завантаження {self.message_type}",
+            sleep=self.sleep,
+        )
 
         try:
             html = payload.decode(self.response_encoding)
@@ -293,4 +393,205 @@ class OnlineDataSource:
 
         text = html_to_text(html)
         validate_downloaded_message(text, self.bulletin_date)
+        return text
+
+
+@dataclass(frozen=True)
+class ArchiveDataSource:
+    """Читає останню збережену версію raw-повідомлення за датою і типом."""
+
+    raw_root: Path
+    bulletin_date: str
+    message_type: str
+    encoding: str = "utf-8"
+
+    def _resolve_path(self) -> Path:
+        try:
+            observed_date = datetime.strptime(self.bulletin_date, "%d.%m.%Y")
+        except ValueError as exc:
+            raise ValueError("Дата має бути у форматі ДД.ММ.РРРР.") from exc
+
+        normalized_type = self.message_type.upper()
+        folder = (
+            Path(self.raw_root)
+            / f"{observed_date.year:04d}"
+            / f"{observed_date.month:02d}"
+        )
+        stem = f"{observed_date:%Y-%m-%d}_{normalized_type}"
+        candidates = list(folder.glob(f"{stem}*.txt"))
+        if not candidates:
+            raise FileNotFoundError(
+                f"В архіві немає {normalized_type} за {self.bulletin_date}: "
+                f"{folder}"
+            )
+
+        def version(path: Path) -> int:
+            suffix = path.stem.removeprefix(stem)
+            if not suffix:
+                return 1
+            match = re.fullmatch(r"_(\d+)", suffix)
+            return int(match.group(1)) if match else 0
+
+        return max(candidates, key=lambda path: (version(path), path.stat().st_mtime))
+
+    @property
+    def path(self) -> Path:
+        return self._resolve_path()
+
+    @property
+    def source_name(self) -> str:
+        return str(self.path)
+
+    @property
+    def source_type(self) -> str:
+        return "archive"
+
+    def load_text(self) -> str:
+        return self.path.read_text(encoding=self.encoding)
+
+
+@dataclass
+class FallbackDataSource:
+    """Послідовно пробує джерела й запам'ятовує фактично використане."""
+
+    sources: Sequence[TextDataSource]
+    resolved_source_type: str = ""
+    resolved_source_name: str = ""
+
+    @property
+    def source_type(self) -> str:
+        return self.resolved_source_type or "auto"
+
+    @property
+    def source_name(self) -> str:
+        return self.resolved_source_name or "автоматичне джерело"
+
+    def load_text(self) -> str:
+        errors: list[str] = []
+        for source in self.sources:
+            try:
+                text = source.load_text()
+            except (DataSourceError, FileNotFoundError, OSError, ValueError) as exc:
+                label = getattr(source, "source_type", source.__class__.__name__)
+                errors.append(f"{label}: {exc}")
+                continue
+            if not text.strip():
+                errors.append(f"{source.__class__.__name__}: порожній текст")
+                continue
+            self.resolved_source_type = str(
+                getattr(source, "source_type", source.__class__.__name__)
+            )
+            self.resolved_source_name = str(
+                getattr(source, "source_name", source.__class__.__name__)
+            )
+            return text
+
+        detail = "; ".join(errors) if errors else "джерела не задані"
+        raise DataSourceError(f"Жодне резервне джерело не спрацювало: {detail}")
+
+
+@dataclass
+class OnlineMeteoDataSource:
+    """Завантажує SYNOP-повідомлення потрібних метеостанцій."""
+
+    connection: OnlineConnection
+    bulletin_date: str
+    station_indexes: Sequence[str]
+    opener: OpenerProtocol | None = None
+    response_encoding: str = "koi8-u"
+    message_count: int = 32
+    sleep: Callable[[float], None] = time.sleep
+
+    @property
+    def source_type(self) -> str:
+        return "online_meteo"
+
+    @property
+    def source_name(self) -> str:
+        return f"SYNOP@{self.connection.base_url}"
+
+    def _build_opener(self):
+        password_manager = HTTPPasswordMgrWithDefaultRealm()
+        password_manager.add_password(
+            None,
+            self.connection.base_url,
+            self.connection.username,
+            self.connection.password,
+        )
+        return build_opener(HTTPBasicAuthHandler(password_manager))
+
+    def load_text(self) -> str:
+        if not self.station_indexes:
+            raise DataSourceError("Не задано метеостанції для завантаження SYNOP.")
+        try:
+            bulletin = datetime.strptime(self.bulletin_date, "%d.%m.%Y")
+        except ValueError as exc:
+            raise ValueError("Дата має бути у форматі ДД.ММ.РРРР.") from exc
+
+        base_url = self.connection.base_url.rstrip("/")
+        index_url = f"{base_url}/sino/index.phtml?NODEF=ON&SM=ON&SI=ON"
+        blanks_url = f"{base_url}/sino/blanks.phtml"
+        opener = self.opener or self._build_opener()
+
+        index_request = Request(index_url, headers={"User-Agent": "Mozilla/5.0"})
+        _request_bytes_with_retries(
+            opener,
+            index_request,
+            self.connection,
+            "Підключення до SYNOP-архіву",
+            sleep=self.sleep,
+        )
+
+        local_end = bulletin.replace(hour=23, minute=59, second=59)
+        utc_end = ukraine_local_to_utc(local_end)
+        local_start = (bulletin - timedelta(days=2)).replace(
+            hour=0,
+            minute=0,
+            second=0,
+        )
+        utc_start = ukraine_local_to_utc(local_start) - timedelta(seconds=1)
+
+        def fetch(blank_value: str) -> str:
+            form = {
+                "T1": " ".join(dict.fromkeys(self.station_indexes)),
+                "blank": blank_value,
+                "nabors": "",
+                "numb": str(self.message_count),
+                "srok": utc_end.strftime("%Y-%m-%d %H:%M:%S"),
+                "dosrok": utc_start.strftime("%Y-%m-%d %H:%M:%S"),
+                "SM": "on",
+                "SI": "on",
+            }
+            body = urlencode(form, encoding="koi8-u").encode("ascii")
+            request = Request(
+                blanks_url,
+                data=body,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "User-Agent": "Mozilla/5.0",
+                    "Referer": index_url,
+                },
+                method="POST",
+            )
+            payload = _request_bytes_with_retries(
+                opener,
+                request,
+                self.connection,
+                "Завантаження SYNOP",
+                sleep=self.sleep,
+            )
+            try:
+                return html_to_text(payload.decode(self.response_encoding))
+            except UnicodeDecodeError as exc:
+                raise DataSourceError(
+                    "SYNOP-відповідь не вдалося декодувати як KOI8-U."
+                ) from exc
+
+        text = fetch("norm")
+        if not any(index in text for index in self.station_indexes):
+            text = fetch("zipfile")
+        if not any(index in text for index in self.station_indexes):
+            raise DataSourceError(
+                "У SYNOP-відповіді не знайдено вибраних метеостанцій."
+            )
         return text

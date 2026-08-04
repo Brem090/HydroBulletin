@@ -1,4 +1,4 @@
-"""Tests for the basic decoder and local archive setup."""
+"""Перевірки базового декодера та створення локального архіву."""
 
 from __future__ import annotations
 
