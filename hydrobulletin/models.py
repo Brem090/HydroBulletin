@@ -74,8 +74,13 @@ class HydroObservation:
 
     @property
     def precipitation_text(self) -> str:
-        value = self._number_text(self.precipitation_mm, digits=1)
-        return value if self.precipitation_mm is None else f"{value} мм"
+        if self.precipitation_mm is None:
+            return "немає даних"
+        if 0.0 <= self.precipitation_mm < 1.0:
+            value = f"{self.precipitation_mm:.1f}".replace(".", ",")
+        else:
+            value = self._number_text(self.precipitation_mm, digits=1)
+        return f"{value} мм"
 
     @property
     def discharge_text(self) -> str:

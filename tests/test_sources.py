@@ -10,10 +10,16 @@ from hydrobulletin.sources import (
     ArchiveDataSource,
     DataSourceError,
     FallbackDataSource,
+    GCST_MIRROR_BASE_URL,
+    GCST_PRIMARY_BASE_URL,
+    GCST_SOURCE_AUTO,
+    GCST_SOURCE_MIRROR,
+    GCST_SOURCE_PRIMARY,
     LocalFileSource,
     OnlineConnection,
     OnlineDataSource,
     OnlineSourceSettings,
+    gcst_source_keys,
     html_to_text,
     validate_downloaded_message,
 )
@@ -90,6 +96,35 @@ class SettingsTests(unittest.TestCase):
                     Path(tmp_dir) / ".env",
                     environ={},
                 )
+
+    def test_gcst_server_order(self) -> None:
+        self.assertEqual(
+            gcst_source_keys(GCST_SOURCE_AUTO),
+            (GCST_SOURCE_PRIMARY, GCST_SOURCE_MIRROR),
+        )
+        self.assertEqual(
+            gcst_source_keys(GCST_SOURCE_MIRROR),
+            (GCST_SOURCE_MIRROR,),
+        )
+
+    def test_gcst_connections_have_built_in_urls(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            env_path = Path(tmp_dir) / ".env"
+            env_path.write_text(
+                "HYDRO_SOURCE_USERNAME=user\n"
+                "HYDRO_SOURCE_PASSWORD=secret\n",
+                encoding="utf-8",
+            )
+            connections = OnlineSourceSettings().load_gcst_connections(
+                GCST_SOURCE_AUTO,
+                env_path,
+                environ={},
+            )
+
+        self.assertEqual(
+            tuple(item.base_url for item in connections),
+            (GCST_PRIMARY_BASE_URL, GCST_MIRROR_BASE_URL),
+        )
 
 
 class DownloadTests(unittest.TestCase):
@@ -187,6 +222,36 @@ class FallbackAndArchiveTests(unittest.TestCase):
             self.assertEqual(source.load_text(), "дані")
             self.assertEqual(source.source_type, "local")
             self.assertEqual(source.source_name, str(available))
+
+    def test_gcst_fallback_uses_mirror_when_primary_has_no_data(self) -> None:
+        wrong_day = "<td>81015 11081 10186 20031 =</td>"
+        valid = "<td>81015 12081 10186 20031 =</td>"
+        primary = OnlineDataSource(
+            OnlineConnection(GCST_PRIMARY_BASE_URL, "user", "pass"),
+            "12.07.2026",
+            "ZRUR52",
+            opener=FakeOpener(
+                FakeResponse(b"index"),
+                FakeResponse(wrong_day.encode("koi8-u")),
+            ),
+        )
+        mirror = OnlineDataSource(
+            OnlineConnection(GCST_MIRROR_BASE_URL, "user", "pass"),
+            "12.07.2026",
+            "ZRUR52",
+            opener=FakeOpener(
+                FakeResponse(b"index"),
+                FakeResponse(valid.encode("koi8-u")),
+            ),
+        )
+        source = FallbackDataSource((primary, mirror))
+
+        self.assertIn("81015 12081", source.load_text())
+        self.assertEqual(source.source_type, "online")
+        self.assertEqual(
+            source.source_name,
+            f"ZRUR52@{GCST_MIRROR_BASE_URL}",
+        )
 
     def test_archive_uses_latest_version(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

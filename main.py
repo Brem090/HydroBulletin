@@ -11,9 +11,15 @@ from typing import Iterable
 from hydrobulletin.archive import archive_summary, initialize_archive
 from hydrobulletin.batch import run_batch_import
 from hydrobulletin.models import HydroObservation
+from hydrobulletin.output_paths import MATERIALS_DIR_NAME
 from hydrobulletin.pipeline import PipelineResult
 from hydrobulletin.regions import REGIONS
-from hydrobulletin.sources import SUPPORTED_MESSAGE_TYPES, DataSourceError
+from hydrobulletin.sources import (
+    GCST_SOURCE_AUTO,
+    GCST_SOURCE_MODES,
+    SUPPORTED_MESSAGE_TYPES,
+    DataSourceError,
+)
 from hydrobulletin.stations import ALL_STATIONS, METEO_STATIONS, STATIONS_BY_INDEX
 from hydrobulletin.workflow import (
     DEFAULT_HYDROLOGIST,
@@ -29,7 +35,11 @@ DEFAULT_FILE = PROJECT_DIR / "demo_data" / "week3" / "12.07.2026_ZRUR52.txt"
 DEFAULT_ARCHIVE_DB = PROJECT_DIR / "archive" / "database" / "hydro_archive.sqlite"
 DEFAULT_RAW_ROOT = PROJECT_DIR / "archive" / "raw"
 DEFAULT_TEMPLATES = PROJECT_DIR / "templates" / "bulletins"
-DEFAULT_OUTPUT = PROJECT_DIR / "output" / "week3"
+DEFAULT_MAP_TEMPLATE = (
+    PROJECT_DIR / "templates" / "maps" / "HydroMap_UHMC_Lviv_template_clean.png"
+)
+DEFAULT_FONT = PROJECT_DIR / "resources" / "fonts" / "e-Ukraine-Regular.otf"
+DEFAULT_OUTPUT = PROJECT_DIR / MATERIALS_DIR_NAME
 DEFAULT_MAPPING = PROJECT_DIR / "config" / "precipitation_mapping.json"
 
 
@@ -48,7 +58,8 @@ def configure_console() -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "HydroBulletin: джерело → raw → декодування → QC → SQLite → DOCX."
+            "HydroBulletin: джерело → raw → декодування → QC → SQLite → "
+            "DOCX/PNG."
         )
     )
     parser.add_argument(
@@ -70,6 +81,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=DEFAULT_FILE,
         help=f"Локальний гідрологічний TXT (типово: {DEFAULT_FILE}).",
+    )
+    parser.add_argument(
+        "--gcst-source",
+        choices=GCST_SOURCE_MODES,
+        default=GCST_SOURCE_AUTO,
+        help=(
+            "Сервер ГЦСТ: auto (основний, потім дзеркало), primary "
+            "або mirror (типово: auto)."
+        ),
     )
     parser.add_argument(
         "--meteo-file",
@@ -125,6 +145,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Завершити після імпорту та QC без створення DOCX.",
     )
     parser.add_argument(
+        "--map",
+        dest="create_map",
+        action="store_true",
+        help="Створити гідрологічну карту Львівської області.",
+    )
+    parser.add_argument(
+        "--level-chart",
+        action="store_true",
+        help="Створити єдиний графік рівнів води за 08:00 і 20:00.",
+    )
+    parser.add_argument(
+        "--discharge-chart",
+        action="store_true",
+        help="Створити графік витрат води.",
+    )
+    parser.add_argument(
+        "--chart-station",
+        default="81015",
+        help="Індекс гідропоста для архівних графіків (типово: 81015).",
+    )
+    parser.add_argument(
+        "--start-date",
+        help="Початок періоду графіка ДД.ММ.РРРР (типово: --date).",
+    )
+    parser.add_argument(
+        "--end-date",
+        help="Кінець періоду графіка ДД.ММ.РРРР (типово: --date).",
+    )
+    parser.add_argument(
         "--env-file",
         type=Path,
         default=PROJECT_DIR / ".env",
@@ -149,10 +198,25 @@ def build_parser() -> argparse.ArgumentParser:
         help="Папка трьох шаблонів DOCX.",
     )
     parser.add_argument(
+        "--map-template",
+        type=Path,
+        default=DEFAULT_MAP_TEMPLATE,
+        help="PNG-шаблон карти Львівської області.",
+    )
+    parser.add_argument(
+        "--font",
+        type=Path,
+        default=DEFAULT_FONT,
+        help="Шрифт e-Ukraine для карти й графіків.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=DEFAULT_OUTPUT,
-        help="Папка сформованих DOCX.",
+        help=(
+            "Коренева папка сформованих DOCX і PNG. Підпапки року й "
+            "місяця створюються автоматично."
+        ),
     )
     parser.add_argument(
         "--mapping",
@@ -219,7 +283,10 @@ def print_pipeline_result(result: PipelineResult) -> None:
         else "новий імпорт"
     )
     print()
-    print(f"{result.message_type}: {state}; джерело: {result.source_type}")
+    print(
+        f"{result.message_type}: {state}; джерело: "
+        f"{result.source_type} ({result.source_name})"
+    )
     print(f"Raw-файл: {result.raw_path}")
     print(f"Розкодовано постів: {len(result.observations)}")
     print(f"Нових значень у SQLite: {imported.inserted_observations}")
@@ -239,7 +306,8 @@ def print_workflow_result(result: WorkflowResult) -> None:
         print(
             "SYNOP: "
             f"{len(meteo.observations)} метеостанцій, "
-            f"{meteo.import_result.inserted_observations} нових значень."
+            f"{meteo.import_result.inserted_observations} нових значень; "
+            f"джерело: {meteo.source_name}."
         )
 
     print()
@@ -258,6 +326,26 @@ def print_workflow_result(result: WorkflowResult) -> None:
                 f"{bulletin.region_key}: {bulletin.output_path} "
                 f"(використано значень: "
                 f"{bulletin.product.linked_observations})"
+            )
+
+    if result.map_result is not None:
+        print()
+        print("ГІДРОЛОГІЧНА КАРТА")
+        print("-" * 36)
+        print(
+            f"{result.map_result.output_path} "
+            f"(нанесено постів: {result.map_result.plotted_stations})"
+        )
+
+    if result.charts:
+        print()
+        print("АРХІВНІ ГРАФІКИ")
+        print("-" * 36)
+        for chart in result.charts:
+            print(
+                f"{chart.output_path} "
+                f"(значень: {chart.available_points}, "
+                f"пропусків: {chart.missing_points})"
             )
 
     for warning in result.warnings:
@@ -294,10 +382,19 @@ def _workflow_request(args: argparse.Namespace, *, source_mode: str | None = Non
         output_dir=args.output_dir,
         mapping_path=args.mapping,
         env_path=args.env_file,
+        gcst_source_mode=args.gcst_source,
         region_keys=tuple(args.regions),
         hydrologist=args.hydrologist,
         include_meteo=not args.no_meteo,
         create_bulletins=not args.no_bulletins,
+        create_map=args.create_map,
+        map_template_path=args.map_template,
+        font_path=args.font,
+        chart_station_index=args.chart_station,
+        chart_start_date=args.start_date or args.date,
+        chart_end_date=args.end_date or args.date,
+        create_level_chart=args.level_chart,
+        create_discharge_chart=args.discharge_chart,
     )
 
 
@@ -332,6 +429,8 @@ def _run_batch(args: argparse.Namespace) -> WorkflowResult:
         result.warnings
         + tuple(f"{item.path}: {item.message}" for item in batch.errors),
         result.archive_counts,
+        result.map_result,
+        result.charts,
     )
 
 
@@ -365,7 +464,7 @@ def main() -> int:
         print(f"Версія схеми: 3")
         return 0
 
-    print("HYDROBULLETIN — РОБОЧИЙ СЦЕНАРІЙ ТИЖНЯ 3")
+    print("HYDROBULLETIN — РОБОЧИЙ СЦЕНАРІЙ ТИЖНЯ 4")
     print("=" * 58)
     print(f"Дата бюлетеня: {args.date}")
     print(f"Режим: {'batch' if args.batch_folder else args.source}")

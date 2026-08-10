@@ -13,6 +13,15 @@ from .archive import (
 )
 from .batch import BatchImportResult, discover_batch_files, run_batch_import
 from .bulletins import BulletinResult, generate_bulletin, generate_bulletins
+from .charts import (
+    DISCHARGE_CHART,
+    LEVEL_CHART,
+    ChartResult,
+    chart_output_name,
+    create_charts,
+    create_discharge_chart,
+    create_level_chart,
+)
 from .decoder import (
     decode_codes,
     parse_change,
@@ -23,6 +32,13 @@ from .decoder import (
     parse_temperature,
 )
 from .models import HydroMeasurement, HydroObservation, Station
+from .output_paths import MATERIALS_DIR_NAME, MONTHS_UA_FOLDER, dated_output_dir
+from .maps import (
+    LVIV_MAP_STATION_INDEXES,
+    MapResult,
+    create_lviv_map,
+    map_output_name,
+)
 from .pipeline import PipelineResult, run_import_pipeline
 from .quality import (
     INCONSISTENT_CHANGE,
@@ -36,15 +52,24 @@ from .sources import (
     ArchiveDataSource,
     DataSourceError,
     FallbackDataSource,
+    GCST_MIRROR_BASE_URL,
+    GCST_PRIMARY_BASE_URL,
+    GCST_SOURCE_AUTO,
+    GCST_SOURCE_LABELS,
+    GCST_SOURCE_MIRROR,
+    GCST_SOURCE_MODES,
+    GCST_SOURCE_PRIMARY,
     LocalFileSource,
     OnlineDataSource,
     OnlineMeteoDataSource,
     OnlineSourceSettings,
     TextDataSource,
+    gcst_source_keys,
+    normalize_gcst_source_mode,
 )
 from .workflow import WorkflowRequest, WorkflowResult, execute_workflow
 
-__version__ = "0.3.3.1"
+__version__ = "0.4.1.3"
 
 __all__ = [
     "HydroObservation",
@@ -58,6 +83,15 @@ __all__ = [
     "ArchiveDataSource",
     "FallbackDataSource",
     "DataSourceError",
+    "GCST_PRIMARY_BASE_URL",
+    "GCST_MIRROR_BASE_URL",
+    "GCST_SOURCE_AUTO",
+    "GCST_SOURCE_PRIMARY",
+    "GCST_SOURCE_MIRROR",
+    "GCST_SOURCE_MODES",
+    "GCST_SOURCE_LABELS",
+    "normalize_gcst_source_mode",
+    "gcst_source_keys",
     "decode_codes",
     "parse_level",
     "parse_change",
@@ -88,6 +122,20 @@ __all__ = [
     "generate_bulletin",
     "generate_bulletins",
     "BulletinResult",
+    "MapResult",
+    "LVIV_MAP_STATION_INDEXES",
+    "create_lviv_map",
+    "map_output_name",
+    "MATERIALS_DIR_NAME",
+    "MONTHS_UA_FOLDER",
+    "dated_output_dir",
+    "ChartResult",
+    "LEVEL_CHART",
+    "DISCHARGE_CHART",
+    "create_level_chart",
+    "create_discharge_chart",
+    "create_charts",
+    "chart_output_name",
     "WorkflowRequest",
     "WorkflowResult",
     "execute_workflow",

@@ -28,6 +28,21 @@ MESSAGE_SEARCH_QUERIES = {
     "ZRUR53": "зрур53*",
     "ZRUR71": "зрур71*",
 }
+GCST_PRIMARY_BASE_URL = "http://gcst.meteo.gov.ua/armua"
+GCST_MIRROR_BASE_URL = "http://rgcst.meteo.gov.ua/armua"
+GCST_SOURCE_AUTO = "auto"
+GCST_SOURCE_PRIMARY = "primary"
+GCST_SOURCE_MIRROR = "mirror"
+GCST_SOURCE_MODES = (
+    GCST_SOURCE_AUTO,
+    GCST_SOURCE_PRIMARY,
+    GCST_SOURCE_MIRROR,
+)
+GCST_SOURCE_LABELS = {
+    GCST_SOURCE_AUTO: "Автоматично (основний → дзеркало)",
+    GCST_SOURCE_PRIMARY: "Основний ГЦСТ",
+    GCST_SOURCE_MIRROR: "Дзеркало ГЦСТ",
+}
 _HTML_BLOCK_TAGS = {
     "br",
     "div",
@@ -97,11 +112,15 @@ class OnlineSourceSettings:
     timeout_variable: str = "HYDRO_SOURCE_TIMEOUT"
     attempts_variable: str = "HYDRO_SOURCE_ATTEMPTS"
     retry_delay_variable: str = "HYDRO_SOURCE_RETRY_DELAY"
+    primary_url_variable: str = "HYDRO_SOURCE_PRIMARY_URL"
+    mirror_url_variable: str = "HYDRO_SOURCE_MIRROR_URL"
 
     def load_connection(
         self,
         env_path: Path | None = None,
         environ: Mapping[str, str] | None = None,
+        *,
+        base_url: str | None = None,
     ) -> OnlineConnection:
         """Завантажує адресу й доступи з ``.env`` та змінних середовища."""
 
@@ -121,13 +140,21 @@ class OnlineSourceSettings:
             if environment.get(key):
                 values[key] = environment[key]
 
-        base_url = values.get(self.url_variable, "").strip().rstrip("/")
+        configured_url = values.get(self.url_variable, "").strip()
+        selected_url = (base_url or configured_url).strip().rstrip("/")
         username = values.get(self.username_variable, "").strip()
         password = values.get(self.password_variable, "").strip()
-        if not base_url or not username or not password:
+        missing = []
+        if not selected_url:
+            missing.append(self.url_variable)
+        if not username:
+            missing.append(self.username_variable)
+        if not password:
+            missing.append(self.password_variable)
+        if missing:
             raise DataSourceError(
-                "Не заповнено HYDRO_SOURCE_URL, HYDRO_SOURCE_USERNAME або "
-                "HYDRO_SOURCE_PASSWORD у .env чи змінних середовища."
+                f"Не заповнено {', '.join(missing)} у .env чи змінних "
+                "середовища."
             )
 
         try:
@@ -158,13 +185,73 @@ class OnlineSourceSettings:
             )
 
         return OnlineConnection(
-            base_url,
+            selected_url,
             username,
             password,
             timeout,
             attempts,
             retry_delay,
         )
+
+    def load_gcst_connections(
+        self,
+        source_mode: str = GCST_SOURCE_AUTO,
+        env_path: Path | None = None,
+        environ: Mapping[str, str] | None = None,
+    ) -> tuple[OnlineConnection, ...]:
+        """Повертає налаштовані підключення у вибраному порядку."""
+
+        if env_path is None:
+            env_path = Path(__file__).resolve().parents[1] / ".env"
+        values = _read_env_file(env_path)
+        environment = os.environ if environ is None else environ
+        for key in (self.primary_url_variable, self.mirror_url_variable):
+            if environment.get(key):
+                values[key] = environment[key]
+
+        primary_url = (
+            values.get(self.primary_url_variable, "").strip()
+            or GCST_PRIMARY_BASE_URL
+        )
+        mirror_url = (
+            values.get(self.mirror_url_variable, "").strip()
+            or GCST_MIRROR_BASE_URL
+        )
+        urls = {
+            GCST_SOURCE_PRIMARY: primary_url,
+            GCST_SOURCE_MIRROR: mirror_url,
+        }
+        return tuple(
+            self.load_connection(
+                env_path,
+                environ,
+                base_url=urls[source_key],
+            )
+            for source_key in gcst_source_keys(source_mode)
+        )
+
+
+def normalize_gcst_source_mode(source_mode: str) -> str:
+    """Перевіряє назву режиму вибору сервера ГЦСТ."""
+
+    normalized = str(source_mode or GCST_SOURCE_AUTO).strip().lower()
+    if normalized not in GCST_SOURCE_MODES:
+        raise ValueError(
+            f"Невідомий серверний режим {source_mode}. "
+            f"Доступні: {', '.join(GCST_SOURCE_MODES)}."
+        )
+    return normalized
+
+
+def gcst_source_keys(source_mode: str) -> tuple[str, ...]:
+    """Визначає порядок серверів для одного онлайн-запиту."""
+
+    normalized = normalize_gcst_source_mode(source_mode)
+    if normalized == GCST_SOURCE_PRIMARY:
+        return (GCST_SOURCE_PRIMARY,)
+    if normalized == GCST_SOURCE_MIRROR:
+        return (GCST_SOURCE_MIRROR,)
+    return (GCST_SOURCE_PRIMARY, GCST_SOURCE_MIRROR)
 
 
 def _read_env_file(path: Path) -> dict[str, str]:

@@ -87,6 +87,14 @@ def _format_change(value: float | None) -> str:
     return f"+{text}" if value > 0 else text
 
 
+def _format_precipitation(value: float | None) -> str:
+    if value is None:
+        return ""
+    if 0.0 <= value < 1.0:
+        return f"{value:.1f}".replace(".", ",")
+    return _format_number(value, 1)
+
+
 def _pick_measurement(
     candidates: Sequence[dict[str, object]],
     parameter_code: str,
@@ -418,7 +426,7 @@ def _fill_official_table(table, rows: Sequence[BulletinRow]) -> None:
         values = {
             1: _format_number(item.level, 1),
             2: _format_change(item.change),
-            3: _format_number(item.precipitation, 1),
+            3: _format_precipitation(item.precipitation),
             9: _format_number(item.water_temperature, 1),
         }
         for column, text in values.items():
@@ -450,7 +458,7 @@ def _fill_extended_table(table, rows: Sequence[BulletinRow]) -> None:
             item.station_name,
             _format_number(item.level, 1),
             _format_change(item.change),
-            _format_number(item.precipitation, 1),
+            _format_precipitation(item.precipitation),
             _format_number(item.water_temperature, 1),
             _format_number(item.discharge, 3),
             QUALITY_DISPLAY.get(item.quality_status, item.quality_status),

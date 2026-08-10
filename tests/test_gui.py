@@ -8,6 +8,7 @@ import sys
 import unittest
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import main as main_module
@@ -39,14 +40,62 @@ class GuiContractTests(unittest.TestCase):
     def test_hydrologist_is_filled_automatically(self) -> None:
         self.assertEqual(gui.DEFAULT_HYDROLOGIST, "Євген КОЗИРЄВ")
 
-    def test_gui_has_two_source_choices(self) -> None:
+    def test_gui_has_operational_and_archive_source_choices(self) -> None:
         self.assertEqual(
             gui.SOURCE_LABELS,
             {
                 "Автоматично": "auto",
                 "Локальний TXT-файл": "local",
+                "Архів SQLite": "database",
             },
         )
+
+    def test_gui_has_primary_mirror_and_automatic_gcst_choices(self) -> None:
+        self.assertEqual(
+            gui.GCST_LABEL_TO_MODE,
+            {
+                "Автоматично (основний → дзеркало)": "auto",
+                "Основний ГЦСТ": "primary",
+                "Дзеркало ГЦСТ": "mirror",
+            },
+        )
+
+    def test_gcst_usage_summary_identifies_fallback(self) -> None:
+        result = SimpleNamespace(
+            hydro_imports=(
+                SimpleNamespace(
+                    source_name=(
+                        "ZRUR52@http://rgcst.meteo.gov.ua/armua"
+                    )
+                ),
+            ),
+            meteo_import=None,
+        )
+        self.assertEqual(
+            gui.gcst_usage_summary(result, "auto"),
+            "Використано резервне дзеркало ГЦСТ.",
+        )
+
+    def test_cli_accepts_explicit_gcst_server(self) -> None:
+        args = main_module.build_parser().parse_args(
+            ["--gcst-source", "mirror"]
+        )
+        self.assertEqual(args.gcst_source, "mirror")
+
+    def test_chart_station_label_resolves_to_station_index(self) -> None:
+        label = next(
+            item for item in gui.CHART_STATION_LABELS if item.startswith("81015 ")
+        )
+        self.assertEqual(gui.station_index_from_label(label), "81015")
+        with self.assertRaisesRegex(ValueError, "вибрати гідрологічний пост"):
+            gui.station_index_from_label("невідомий пост")
+
+    def test_week4_visual_products_are_available_without_manual_corrections(self) -> None:
+        source = inspect.getsource(gui.HydroBulletinApp._build_visuals_section)
+        self.assertIn("Гідрологічна карта Львівської області", source)
+        self.assertIn("Графік ходу рівнів води", source)
+        self.assertIn("Графік витрат води", source)
+        self.assertNotIn("ручн", source.lower())
 
     def test_message_types_are_selected_for_regions(self) -> None:
         self.assertEqual(
@@ -83,6 +132,11 @@ class GuiContractTests(unittest.TestCase):
     def test_date_format_matches_operational_interface(self) -> None:
         value = datetime(2026, 7, 30)
         self.assertEqual(gui.format_date_for_output(value), "30.07.2026")
+
+    def test_default_output_uses_calendar_folders_not_week_names(self) -> None:
+        source = inspect.getsource(gui.HydroBulletinApp.__init__)
+        self.assertIn("MATERIALS_DIR_NAME", source)
+        self.assertNotIn('"week4"', source)
 
     def test_keyboard_interrupt_closes_gui_without_traceback(self) -> None:
         stderr = io.StringIO()

@@ -18,7 +18,10 @@ GROUP_LABELS = {
     "test_quality": "Первинний контроль якості",
     "test_sources": "Джерела даних та онлайн-завантаження",
     "test_gui": "Інтерфейс і масштабування",
+    "test_output_paths": "Календарна структура матеріалів",
     "test_week3_integration": "Пакетний сценарій і Word-бюлетені",
+    "test_visual_products": "Карта, графіки та походження даних",
+    "test_week4_integration": "Наскрізний сценарій тижня 4",
 }
 
 
@@ -85,7 +88,8 @@ def run_compact(project_dir: Path) -> int:
         failed = len(result.failures) + len(result.errors) + len(result.unexpectedSuccesses)
         skipped = len(result.skipped)
         passed = result.testsRun - failed - skipped
-        label = GROUP_LABELS.get(module_name, module_name.replace("test_", "").replace("_", " ").title())
+        default_label = module_name.replace("test_", "").replace("_", " ").title()
+        label = GROUP_LABELS.get(module_name, default_label)
         marker = "OK" if result.wasSuccessful() else "FAIL"
 
         print(f"[{marker:4}] {label:<38} {passed}/{result.testsRun}")

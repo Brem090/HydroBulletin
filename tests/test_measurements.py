@@ -13,7 +13,7 @@ from hydrobulletin.decoder import (
     parse_precipitation,
     parse_temperature,
 )
-from hydrobulletin.models import Station, observation_measurements
+from hydrobulletin.models import HydroObservation, Station, observation_measurements
 
 
 class DischargeTests(unittest.TestCase):
@@ -64,6 +64,16 @@ class PrecipitationTests(unittest.TestCase):
         self.assertEqual(parse_precipitation("00081"), 8.0)
         self.assertEqual(parse_precipitation("09940"), 0.4)
         self.assertEqual(parse_precipitation("01361"), 136.0)
+        observation = HydroObservation(
+            index="81017",
+            station_name="Дністер — Самбір",
+            level=100,
+            change=0,
+            evening_level=100,
+            raw_record="",
+            precipitation_mm=0.0,
+        )
+        self.assertEqual(observation.precipitation_text, "0,0 мм")
 
     def test_missing_and_invalid_values(self) -> None:
         self.assertIsNone(parse_precipitation("00000"))

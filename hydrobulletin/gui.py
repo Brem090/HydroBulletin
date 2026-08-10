@@ -8,12 +8,20 @@ import subprocess
 import sys
 import threading
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
 from .regions import REGIONS
-from .sources import SUPPORTED_MESSAGE_TYPES
+from .output_paths import MATERIALS_DIR_NAME, dated_output_dir
+from .sources import (
+    GCST_MIRROR_BASE_URL,
+    GCST_PRIMARY_BASE_URL,
+    GCST_SOURCE_AUTO,
+    GCST_SOURCE_LABELS,
+    SUPPORTED_MESSAGE_TYPES,
+)
+from .stations import HYDRO_STATIONS
 from .workflow import (
     DEFAULT_HYDROLOGIST,
     WorkflowRequest,
@@ -34,6 +42,15 @@ CARD_BORDER = "#BFDDE8"
 SOURCE_LABELS = {
     "Автоматично": "auto",
     "Локальний TXT-файл": "local",
+    "Архів SQLite": "database",
+}
+GCST_LABEL_TO_MODE = {
+    label: source_mode for source_mode, label in GCST_SOURCE_LABELS.items()
+}
+
+CHART_STATION_LABELS = {
+    f"{station.index} — {station.name}": station.index
+    for station in HYDRO_STATIONS
 }
 
 MONTHS_UA = {
@@ -81,6 +98,38 @@ def message_type_from_file(path: Path) -> str:
         if message_type in filename:
             return message_type
     return "ZRUR52"
+
+
+def station_index_from_label(value: str) -> str:
+    """Повертає індекс поста з підпису поля вибору."""
+
+    try:
+        return CHART_STATION_LABELS[value]
+    except KeyError as exc:
+        raise ValueError("Потрібно вибрати гідрологічний пост для графіка.") from exc
+
+
+def gcst_usage_summary(
+    result: WorkflowResult,
+    requested_mode: str,
+) -> str | None:
+    """Описує фактично використаний сервер за результатом імпорту."""
+
+    source_names = [item.source_name for item in result.hydro_imports]
+    if result.meteo_import is not None:
+        source_names.append(result.meteo_import.source_name)
+
+    used_primary = any(GCST_PRIMARY_BASE_URL in name for name in source_names)
+    used_mirror = any(GCST_MIRROR_BASE_URL in name for name in source_names)
+    if used_primary and used_mirror:
+        return "Використано основний сервер і дзеркало ГЦСТ."
+    if used_mirror:
+        if requested_mode == GCST_SOURCE_AUTO:
+            return "Використано резервне дзеркало ГЦСТ."
+        return "Використано дзеркало ГЦСТ."
+    if used_primary:
+        return "Використано основний сервер ГЦСТ."
+    return None
 
 
 def enable_high_dpi_awareness() -> None:
@@ -234,20 +283,29 @@ class HydroBulletinApp:
     def __init__(self, root: tk.Tk, project_dir: Path) -> None:
         self.root = root
         self.project_dir = Path(project_dir)
+        today = datetime.now()
 
         self.root.title("HydroBulletin")
-        self.root.geometry("1060x720")
-        self.root.minsize(980, 620)
+        self.root.geometry("1060x780")
+        self.root.minsize(980, 660)
         self.root.resizable(True, True)
         self.root.configure(bg=BG_MAIN)
 
         self.date_var = tk.StringVar(
             master=self.root,
-            value=format_date_for_output(datetime.now()),
+            value=format_date_for_output(today),
         )
         self.source_var = tk.StringVar(
             master=self.root,
             value=next(iter(SOURCE_LABELS)),
+        )
+        self.gcst_source_var = tk.StringVar(
+            master=self.root,
+            value=GCST_SOURCE_LABELS[GCST_SOURCE_AUTO],
+        )
+        self.gcst_used_source_var = tk.StringVar(
+            master=self.root,
+            value="Сервер ще не перевірявся.",
         )
         self.file_var = tk.StringVar(
             master=self.root,
@@ -269,12 +327,30 @@ class HydroBulletinApp:
         )
         self.output_var = tk.StringVar(
             master=self.root,
-            value=str(self.project_dir / "output" / "week3"),
+            value=str(self.project_dir / MATERIALS_DIR_NAME),
         )
         self.region_vars = {
             region.key: tk.BooleanVar(master=self.root, value=False)
             for region in REGIONS
         }
+        self.create_map_var = tk.BooleanVar(master=self.root, value=False)
+        self.create_level_chart_var = tk.BooleanVar(master=self.root, value=False)
+        self.create_discharge_chart_var = tk.BooleanVar(
+            master=self.root,
+            value=False,
+        )
+        self.chart_station_var = tk.StringVar(
+            master=self.root,
+            value=next(iter(CHART_STATION_LABELS)),
+        )
+        self.chart_start_var = tk.StringVar(
+            master=self.root,
+            value=format_date_for_output(today - timedelta(days=14)),
+        )
+        self.chart_end_var = tk.StringVar(
+            master=self.root,
+            value=format_date_for_output(today),
+        )
         self.status_var = tk.StringVar(
             master=self.root,
             value="Готово до запуску.",
@@ -386,6 +462,7 @@ class HydroBulletinApp:
 
         self._build_date_section()
         self._build_regions_section()
+        self._build_visuals_section()
         self._build_source_section()
         self._build_output_section()
         self._build_action_section()
@@ -460,6 +537,147 @@ class HydroBulletinApp:
             checkbutton.pack(fill="x", padx=8, pady=1)
             self.region_checkbuttons.append(checkbutton)
 
+    def _build_visuals_section(self) -> None:
+        section = tk.Frame(self.card, bg=BG_CARD)
+        section.pack(fill="x", padx=28, pady=(4, 10))
+
+        tk.Label(
+            section,
+            text="Карта й архівні графіки",
+            bg=BG_CARD,
+            fg=TEXT_DARK,
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        visual_card = tk.Frame(
+            section,
+            bg=SUBTLE_CARD,
+            highlightbackground=CARD_BORDER,
+            highlightthickness=1,
+        )
+        visual_card.pack(fill="x")
+        visual_card.columnconfigure(0, weight=1)
+
+        tk.Checkbutton(
+            visual_card,
+            text="Гідрологічна карта Львівської області",
+            variable=self.create_map_var,
+            bg=SUBTLE_CARD,
+            activebackground=SUBTLE_CARD,
+            fg=TEXT_DARK,
+            selectcolor="white",
+            font=("Segoe UI", 11),
+            anchor="w",
+            padx=12,
+            pady=5,
+        ).grid(row=0, column=0, sticky="ew", padx=8, pady=(4, 0))
+
+        tk.Checkbutton(
+            visual_card,
+            text="Графік ходу рівнів води (08:00 і 20:00)",
+            variable=self.create_level_chart_var,
+            command=self._update_chart_fields,
+            bg=SUBTLE_CARD,
+            activebackground=SUBTLE_CARD,
+            fg=TEXT_DARK,
+            selectcolor="white",
+            font=("Segoe UI", 11),
+            anchor="w",
+            padx=12,
+            pady=5,
+        ).grid(row=1, column=0, sticky="ew", padx=8)
+
+        tk.Checkbutton(
+            visual_card,
+            text="Графік витрат води",
+            variable=self.create_discharge_chart_var,
+            command=self._update_chart_fields,
+            bg=SUBTLE_CARD,
+            activebackground=SUBTLE_CARD,
+            fg=TEXT_DARK,
+            selectcolor="white",
+            font=("Segoe UI", 11),
+            anchor="w",
+            padx=12,
+            pady=5,
+        ).grid(row=2, column=0, sticky="ew", padx=8, pady=(0, 4))
+
+        self.chart_fields_frame = tk.Frame(visual_card, bg="#E9F4F8")
+        self.chart_fields_frame.columnconfigure(1, weight=1)
+        self.chart_fields_frame.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=12,
+            pady=(2, 12),
+        )
+
+        self._source_label(self.chart_fields_frame, "Гідропост", 0)
+        self.chart_station_combo = ttk.Combobox(
+            self.chart_fields_frame,
+            textvariable=self.chart_station_var,
+            values=tuple(CHART_STATION_LABELS),
+            state="readonly",
+            style="Hydro.TCombobox",
+        )
+        self.chart_station_combo.grid(
+            row=0,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            padx=(12, 14),
+            pady=(10, 5),
+        )
+
+        def add_date_row(
+            row: int,
+            label: str,
+            variable: tk.StringVar,
+        ) -> None:
+            self._source_label(self.chart_fields_frame, label, row)
+            entry = tk.Entry(
+                self.chart_fields_frame,
+                textvariable=variable,
+                width=16,
+                font=("Segoe UI", 10),
+                relief="solid",
+                bd=1,
+                justify="center",
+            )
+            entry.grid(
+                row=row,
+                column=1,
+                sticky="ew",
+                padx=(12, 8),
+                pady=5,
+                ipady=4,
+            )
+            tk.Button(
+                self.chart_fields_frame,
+                text="Календар…",
+                command=lambda: self.open_calendar(variable),
+                bg="#D1EAF4",
+                fg=BLUE_DARK,
+                activebackground="#B9DDEA",
+                activeforeground=BLUE_DARK,
+                relief="flat",
+                cursor="hand2",
+                font=("Segoe UI", 9, "bold"),
+                padx=10,
+                pady=4,
+                width=12,
+            ).grid(
+                row=row,
+                column=2,
+                sticky="e",
+                padx=(0, 14),
+                pady=5,
+            )
+
+        add_date_row(1, "Початок періоду", self.chart_start_var)
+        add_date_row(2, "Кінець періоду", self.chart_end_var)
+        self._update_chart_fields()
+
     def _build_source_section(self) -> None:
         section = tk.Frame(self.card, bg=BG_CARD)
         section.pack(fill="x", padx=28, pady=(4, 10))
@@ -502,13 +720,83 @@ class HydroBulletinApp:
             self._update_source_fields,
         )
 
+        self.gcst_frame = tk.Frame(
+            source_card,
+            bg=SUBTLE_CARD,
+        )
+        self.gcst_frame.columnconfigure(1, weight=1)
+        self.gcst_frame.grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+        )
+
+        self._source_label(self.gcst_frame, "Сервер ГЦСТ", 0)
+        self.gcst_source_combo = ttk.Combobox(
+            self.gcst_frame,
+            textvariable=self.gcst_source_var,
+            values=tuple(GCST_LABEL_TO_MODE),
+            state="readonly",
+            style="Hydro.TCombobox",
+        )
+        self.gcst_source_combo.grid(
+            row=0,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            padx=(12, 14),
+            pady=(12, 5),
+        )
+        self.gcst_source_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.gcst_used_source_var.set(
+                "Сервер ще не перевірявся."
+            ),
+        )
+        tk.Label(
+            self.gcst_frame,
+            text=(
+                "Автоматичний режим спочатку перевіряє основний сервер, "
+                "а за недоступності або відсутності даних — дзеркало."
+            ),
+            bg=SUBTLE_CARD,
+            fg="#667B85",
+            font=("Segoe UI", 9),
+            wraplength=640,
+            justify="left",
+            anchor="w",
+        ).grid(
+            row=1,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            padx=14,
+            pady=(2, 3),
+        )
+        tk.Label(
+            self.gcst_frame,
+            textvariable=self.gcst_used_source_var,
+            bg=SUBTLE_CARD,
+            fg=BLUE_DARK,
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        ).grid(
+            row=2,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+            padx=14,
+            pady=(0, 8),
+        )
+
         self.local_files_frame = tk.Frame(
             source_card,
             bg=SUBTLE_CARD,
         )
         self.local_files_frame.columnconfigure(1, weight=1)
         self.local_files_frame.grid(
-            row=1,
+            row=2,
             column=0,
             columnspan=3,
             sticky="ew",
@@ -554,24 +842,56 @@ class HydroBulletinApp:
         self._path_row(
             output_card,
             row=0,
-            label="Папка матеріалів",
+            label="Коренева папка",
             variable=self.output_var,
             command=self._choose_output,
         )
+        tk.Label(
+            output_card,
+            text="Підпапки року й місяця програма створює автоматично.",
+            bg=SUBTLE_CARD,
+            fg="#526B76",
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).grid(
+            row=1,
+            column=1,
+            columnspan=2,
+            sticky="w",
+            padx=(12, 14),
+            pady=(0, 8),
+        )
 
     def _update_source_fields(self, _event=None) -> None:
-        if SOURCE_LABELS.get(self.source_var.get()) == "local":
+        source_mode = SOURCE_LABELS.get(self.source_var.get())
+        if source_mode == "auto":
+            self.gcst_frame.grid()
+        else:
+            self.gcst_frame.grid_remove()
+        if source_mode == "local":
             self.local_files_frame.grid()
         else:
             self.local_files_frame.grid_remove()
         self.root.after_idle(self._refresh_scroll_region)
 
+    def _update_chart_fields(self) -> None:
+        charts_selected = (
+            self.create_level_chart_var.get()
+            or self.create_discharge_chart_var.get()
+        )
+        if charts_selected:
+            self.chart_fields_frame.grid()
+        else:
+            self.chart_fields_frame.grid_remove()
+        self.root.after_idle(self._refresh_scroll_region)
+
     @staticmethod
     def _source_label(parent, text: str, row: int) -> None:
+        background = parent.cget("bg")
         tk.Label(
             parent,
             text=text,
-            bg=SUBTLE_CARD,
+            bg=background,
             fg=TEXT_DARK,
             font=("Segoe UI", 10),
             anchor="w",
@@ -747,7 +1067,7 @@ class HydroBulletinApp:
             self.log_text.bind(event_name, lambda _event: "break")
 
         self._write_log(
-            "Виберіть дату та потрібні бюлетені.",
+            "Виберіть дату та матеріали для створення.",
             clear=True,
         )
 
@@ -814,12 +1134,13 @@ class HydroBulletinApp:
         except tk.TclError:
             pass
 
-    def open_calendar(self) -> None:
+    def open_calendar(self, variable: tk.StringVar | None = None) -> None:
+        target = variable or self.date_var
         try:
-            selected = parse_date(self.date_var.get())
+            selected = parse_date(target.get())
         except ValueError:
             selected = datetime.now()
-        popup = CalendarPopup(self.root, selected, self.date_var.set)
+        popup = CalendarPopup(self.root, selected, target.set)
         popup.transient(self.root)
         popup.grab_set()
         popup.focus_force()
@@ -835,7 +1156,7 @@ class HydroBulletinApp:
 
     def _choose_output(self) -> None:
         selected = filedialog.askdirectory(
-            title="Папка для Word-бюлетенів",
+            title="Папка для створених матеріалів",
             parent=self.root,
         )
         if selected:
@@ -851,7 +1172,23 @@ class HydroBulletinApp:
             )
             return
         folder = Path(output_text)
-        folder.mkdir(parents=True, exist_ok=True)
+        try:
+            chart_only = (
+                not any(variable.get() for variable in self.region_vars.values())
+                and not self.create_map_var.get()
+                and (
+                    self.create_level_chart_var.get()
+                    or self.create_discharge_chart_var.get()
+                )
+            )
+            folder_date = (
+                self.chart_end_var.get().strip()
+                if chart_only
+                else self.date_var.get().strip()
+            )
+            folder = dated_output_dir(folder, folder_date)
+        except ValueError:
+            folder.mkdir(parents=True, exist_ok=True)
         try:
             if sys.platform.startswith("win"):
                 os.startfile(str(folder))
@@ -872,6 +1209,16 @@ class HydroBulletinApp:
             for region in REGIONS
             if self.region_vars[region.key].get()
         )
+        create_map = self.create_map_var.get()
+        create_level_chart = self.create_level_chart_var.get()
+        create_discharge_chart = self.create_discharge_chart_var.get()
+        if not (
+            region_keys
+            or create_map
+            or create_level_chart
+            or create_discharge_chart
+        ):
+            raise ValueError("Потрібно вибрати хоча б один матеріал для створення.")
 
         def optional_path(value: str) -> Path | None:
             text = value.strip()
@@ -895,10 +1242,18 @@ class HydroBulletinApp:
         if source_mode == "local" and local_file is None:
             raise ValueError("Потрібно вибрати гідрологічний TXT-файл.")
 
+        message_regions = region_keys
+        if create_map and "lviv" not in message_regions:
+            message_regions += ("lviv",)
         message_types = (
             (message_type_from_file(local_file),)
             if local_file is not None
-            else message_types_for_regions(region_keys)
+            else message_types_for_regions(message_regions)
+        )
+        chart_station_index = (
+            station_index_from_label(self.chart_station_var.get())
+            if create_level_chart or create_discharge_chart
+            else None
         )
 
         return WorkflowRequest(
@@ -922,9 +1277,29 @@ class HydroBulletinApp:
                 / "precipitation_mapping.json"
             ),
             env_path=self.project_dir / ".env",
+            gcst_source_mode=GCST_LABEL_TO_MODE[self.gcst_source_var.get()],
             region_keys=region_keys,
             hydrologist=DEFAULT_HYDROLOGIST,
-            include_meteo=True,
+            include_meteo=bool(region_keys),
+            create_bulletins=bool(region_keys),
+            create_map=create_map,
+            map_template_path=(
+                self.project_dir
+                / "templates"
+                / "maps"
+                / "HydroMap_UHMC_Lviv_template_clean.png"
+            ),
+            font_path=(
+                self.project_dir
+                / "resources"
+                / "fonts"
+                / "e-Ukraine-Regular.otf"
+            ),
+            chart_station_index=chart_station_index,
+            chart_start_date=self.chart_start_var.get().strip(),
+            chart_end_date=self.chart_end_var.get().strip(),
+            create_level_chart=create_level_chart,
+            create_discharge_chart=create_discharge_chart,
         )
 
     def _start(self) -> None:
@@ -969,13 +1344,31 @@ class HydroBulletinApp:
         self.run_button.configure(state="normal")
         self.status_var.set("Завершено.")
 
+        gcst_summary = gcst_usage_summary(
+            result,
+            GCST_LABEL_TO_MODE[self.gcst_source_var.get()],
+        )
+        if gcst_summary is not None:
+            self.gcst_used_source_var.set(gcst_summary)
+        else:
+            self.gcst_used_source_var.set(
+                "Онлайн-сервер ГЦСТ не використовувався."
+            )
+
         lines = [
             f"Гідрологічних імпортів: {len(result.hydro_imports)}",
             f"SYNOP імпортовано: {'так' if result.meteo_import else 'ні'}",
             f"QC перевірено значень: {result.quality_summary.checked}",
             f"Створено бюлетенів: {len(result.bulletins)}",
+            f"Створено карту: {'так' if result.map_result else 'ні'}",
+            f"Створено графіків: {len(result.charts)}",
         ]
+        if gcst_summary is not None:
+            lines.append(gcst_summary)
         lines.extend(f"• {item.output_path}" for item in result.bulletins)
+        if result.map_result is not None:
+            lines.append(f"• {result.map_result.output_path}")
+        lines.extend(f"• {item.output_path}" for item in result.charts)
         if result.warnings:
             lines.append("Зауваження:")
             lines.extend(f"• {warning}" for warning in result.warnings)

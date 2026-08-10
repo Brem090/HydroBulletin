@@ -178,6 +178,16 @@ class WeekThreeWorkflowTests(unittest.TestCase):
                         str(temperature_run.font.color.rgb),
                         "000000",
                     )
+                elif bulletin.region_key == "left_dnister":
+                    zero_position = next(
+                        position
+                        for position, item in enumerate(bulletin.rows, start=2)
+                        if item.station_index == "81254"
+                    )
+                    self.assertEqual(
+                        data_table.rows[zero_position].cells[3].text.strip(),
+                        "0,0",
+                    )
 
             provenance = read_product_provenance(
                 db_path,
