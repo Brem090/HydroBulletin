@@ -14,6 +14,7 @@ MISSING = "MISSING"
 SUSPICIOUS = "SUSPICIOUS"
 OUT_OF_RANGE = "OUT_OF_RANGE"
 INCONSISTENT_CHANGE = "INCONSISTENT_CHANGE"
+CORRECTED = "CORRECTED"
 
 QUALITY_STATUSES = (
     VALID,
@@ -27,6 +28,7 @@ QUALITY_PRIORITY = {
     "NOT_CHECKED": 0,
     "OK": 0,
     VALID: 1,
+    CORRECTED: 1.5,
     SUSPICIOUS: 2,
     INCONSISTENT_CHANGE: 3,
     OUT_OF_RANGE: 4,
@@ -41,6 +43,7 @@ PHYSICAL_RANGES: dict[str, tuple[float, float]] = {
     "WATER_TEMPERATURE": (-2.0, 40.0),
     "PRECIPITATION": (0.0, 500.0),
     "DISCHARGE": (0.0, 100000.0),
+    "ICE_THICKNESS": (0.0, 500.0),
 }
 
 SUSPICIOUS_LIMITS: dict[str, tuple[float | None, float | None]] = {
@@ -49,6 +52,7 @@ SUSPICIOUS_LIMITS: dict[str, tuple[float | None, float | None]] = {
     "WATER_TEMPERATURE": (-0.5, 30.0),
     "PRECIPITATION": (None, 100.0),
     "DISCHARGE": (None, 10000.0),
+    "ICE_THICKNESS": (None, 200.0),
 }
 
 
@@ -124,7 +128,7 @@ def run_initial_quality_control(
         rows = connection.execute(
             """
             SELECT observation_id, station_index, observed_at,
-                   parameter_code, value
+                   parameter_code, value, text_value
             FROM observations
             WHERE date(observed_at) = date(?)
             ORDER BY observation_id
@@ -133,10 +137,17 @@ def run_initial_quality_control(
         ).fetchall()
 
         for row in rows:
-            status, message = evaluate_value(
-                str(row["parameter_code"]),
-                None if row["value"] is None else float(row["value"]),
-            )
+            if str(row["parameter_code"]) == "ICE_PHENOMENA":
+                status, message = (
+                    (VALID, "")
+                    if str(row["text_value"]).strip()
+                    else (MISSING, "Льодове явище не декодовано.")
+                )
+            else:
+                status, message = evaluate_value(
+                    str(row["parameter_code"]),
+                    None if row["value"] is None else float(row["value"]),
+                )
             connection.execute(
                 """
                 UPDATE observations

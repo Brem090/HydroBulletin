@@ -10,8 +10,17 @@ import threading
 import tkinter as tk
 from datetime import datetime, timedelta
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from .archive import (
+    cancel_correction,
+    create_correction,
+    initialize_archive,
+    read_reference_extremes,
+    upsert_reference_extreme,
+)
+from .extremes import seed_extremes_from_templates
+from .levels import LevelPanelRow, build_level_panel_rows
 from .regions import REGIONS
 from .output_paths import MATERIALS_DIR_NAME, dated_output_dir
 from .sources import (
@@ -21,7 +30,7 @@ from .sources import (
     GCST_SOURCE_LABELS,
     SUPPORTED_MESSAGE_TYPES,
 )
-from .stations import HYDRO_STATIONS
+from .stations import ALL_STATIONS, HYDRO_STATIONS
 from .workflow import (
     DEFAULT_HYDROLOGIST,
     WorkflowRequest,
@@ -38,6 +47,7 @@ GREEN = "#1F7A4D"
 TEXT_DARK = "#16323F"
 SUBTLE_CARD = "#F4FAFC"
 CARD_BORDER = "#BFDDE8"
+RUN_BUTTON_TEXT = "✓ Створити вибрані матеріали"
 
 SOURCE_LABELS = {
     "Автоматично": "auto",
@@ -463,6 +473,7 @@ class HydroBulletinApp:
         self._build_date_section()
         self._build_regions_section()
         self._build_visuals_section()
+        self._build_operational_tools_section()
         self._build_source_section()
         self._build_output_section()
         self._build_action_section()
@@ -536,6 +547,60 @@ class HydroBulletinApp:
             )
             checkbutton.pack(fill="x", padx=8, pady=1)
             self.region_checkbuttons.append(checkbutton)
+
+    def _build_operational_tools_section(self) -> None:
+        section = tk.Frame(self.card, bg=BG_CARD)
+        section.pack(fill="x", padx=28, pady=(4, 10))
+
+        tk.Label(
+            section,
+            text="Оперативні інструменти",
+            bg=BG_CARD,
+            fg=TEXT_DARK,
+            font=("Segoe UI", 12, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        tools_card = tk.Frame(
+            section,
+            bg=SUBTLE_CARD,
+            highlightbackground=CARD_BORDER,
+            highlightthickness=1,
+        )
+        tools_card.pack(fill="x")
+        self.levels_button = tk.Button(
+            tools_card,
+            text="Панель рівнів",
+            command=self.open_levels_panel,
+            bg="#D1EAF4",
+            fg=BLUE_DARK,
+            activebackground="#B9DDEA",
+            activeforeground=BLUE_DARK,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            font=("Segoe UI", 9, "bold"),
+            padx=12,
+            pady=5,
+            width=18,
+        )
+        self.levels_button.pack(side=tk.LEFT, padx=(14, 8), pady=10)
+        self.extremes_button = tk.Button(
+            tools_card,
+            text="Екстремуми",
+            command=self.open_extremes_manager,
+            bg="#D1EAF4",
+            fg=BLUE_DARK,
+            activebackground="#B9DDEA",
+            activeforeground=BLUE_DARK,
+            relief="flat",
+            bd=0,
+            cursor="hand2",
+            font=("Segoe UI", 9, "bold"),
+            padx=12,
+            pady=5,
+            width=18,
+        )
+        self.extremes_button.pack(side=tk.LEFT, padx=8, pady=10)
 
     def _build_visuals_section(self) -> None:
         section = tk.Frame(self.card, bg=BG_CARD)
@@ -955,7 +1020,7 @@ class HydroBulletinApp:
         section.pack(fill="x", padx=28, pady=(8, 10))
         self.run_button = self.make_button(
             section,
-            text="✓ Створити вибрані матеріали",
+            text=RUN_BUTTON_TEXT,
             command=self._start,
             bg=GREEN,
             width=30,
@@ -1203,6 +1268,527 @@ class HydroBulletinApp:
                 parent=self.root,
             )
 
+    def _prepare_operational_archive(self) -> Path:
+        db_path = (
+            self.project_dir
+            / "archive"
+            / "database"
+            / "hydro_archive.sqlite"
+        )
+        initialize_archive(db_path, ALL_STATIONS)
+        seed_extremes_from_templates(
+            db_path,
+            REGIONS,
+            self.project_dir / "templates" / "bulletins",
+        )
+        return db_path
+
+    @staticmethod
+    def _panel_number(value: float | None, *, signed: bool = False) -> str:
+        if value is None:
+            return "—"
+        number = float(value)
+        text = str(int(number)) if number.is_integer() else f"{number:g}"
+        return f"+{text}" if signed and number > 0 else text
+
+    def open_levels_panel(self) -> None:
+        """Відкриває архівні рівні та контрольовані ручні правки."""
+
+        date_text = self.date_var.get().strip()
+        try:
+            parse_date(date_text)
+            db_path = self._prepare_operational_archive()
+            initial_rows = build_level_panel_rows(
+                db_path,
+                date_text,
+                HYDRO_STATIONS,
+            )
+        except (OSError, RuntimeError, ValueError) as exc:
+            messagebox.showerror("Панель рівнів", str(exc), parent=self.root)
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title(f"Панель рівнів — {date_text}")
+        window.geometry("1180x690")
+        window.minsize(980, 560)
+        window.configure(bg=BG_MAIN)
+        window.transient(self.root)
+
+        tk.Label(
+            window,
+            text=f"Рівні на 08:00 {date_text} і 20:00 попередньої доби",
+            bg=BG_MAIN,
+            fg=BLUE_DARK,
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w", padx=20, pady=(18, 4))
+        tk.Label(
+            window,
+            text=(
+                "Активна правка застосовується до бюлетенів, карти й графіків; "
+                "початкове значення залишається незмінним."
+            ),
+            bg=BG_MAIN,
+            fg=TEXT_DARK,
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=20, pady=(0, 10))
+
+        table_frame = tk.Frame(window, bg=BG_MAIN)
+        table_frame.pack(fill="both", expand=True, padx=20)
+        columns = (
+            "index",
+            "station",
+            "morning",
+            "evening",
+            "change",
+            "quality",
+            "correction",
+        )
+        tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+        )
+        headings = {
+            "index": "Індекс",
+            "station": "Річка — пост",
+            "morning": "08:00",
+            "evening": "20:00",
+            "change": "ΔH",
+            "quality": "QC",
+            "correction": "Активна правка",
+        }
+        widths = {
+            "index": 72,
+            "station": 290,
+            "morning": 80,
+            "evening": 80,
+            "change": 80,
+            "quality": 145,
+            "correction": 170,
+        }
+        for column in columns:
+            tree.heading(column, text=headings[column])
+            tree.column(
+                column,
+                width=widths[column],
+                minwidth=60,
+                anchor="w" if column == "station" else "center",
+            )
+        tree.tag_configure("corrected", background="#E2F0D9")
+        tree.tag_configure("warning", background="#FCE8E6")
+        tree.tag_configure("missing", foreground="#6B7280")
+        vertical = tk.Scrollbar(table_frame, orient="vertical", command=tree.yview)
+        horizontal = tk.Scrollbar(
+            table_frame,
+            orient="horizontal",
+            command=tree.xview,
+        )
+        tree.configure(
+            yscrollcommand=vertical.set,
+            xscrollcommand=horizontal.set,
+        )
+        tree.grid(row=0, column=0, sticky="nsew")
+        vertical.grid(row=0, column=1, sticky="ns")
+        horizontal.grid(row=1, column=0, sticky="ew")
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+
+        details_var = tk.StringVar(master=window, value="Виберіть рядок поста.")
+        details = tk.Label(
+            window,
+            textvariable=details_var,
+            bg=SUBTLE_CARD,
+            fg=TEXT_DARK,
+            justify="left",
+            anchor="w",
+            wraplength=1080,
+            font=("Segoe UI", 9),
+            padx=12,
+            pady=8,
+        )
+        details.pack(fill="x", padx=20, pady=(10, 8))
+
+        rows_by_index: dict[str, LevelPanelRow] = {}
+
+        def refresh(rows: tuple[LevelPanelRow, ...] | None = None) -> None:
+            current_rows = rows or build_level_panel_rows(
+                db_path,
+                date_text,
+                HYDRO_STATIONS,
+            )
+            rows_by_index.clear()
+            tree.delete(*tree.get_children())
+            for item in current_rows:
+                rows_by_index[item.station_index] = item
+                corrections: list[str] = []
+                if item.level_correction_id is not None:
+                    corrections.append("рівень")
+                if item.change_correction_id is not None:
+                    corrections.append("зміна")
+                if corrections:
+                    tag = "corrected"
+                elif item.quality_status == "MISSING":
+                    tag = "missing"
+                elif item.quality_status not in {"VALID", "OK", "NOT_CHECKED"}:
+                    tag = "warning"
+                else:
+                    tag = ""
+                tree.insert(
+                    "",
+                    "end",
+                    iid=item.station_index,
+                    values=(
+                        item.station_index,
+                        item.station_name,
+                        self._panel_number(item.morning_level),
+                        self._panel_number(item.previous_evening_level),
+                        self._panel_number(item.daily_change, signed=True),
+                        item.quality_status,
+                        ", ".join(corrections) or "—",
+                    ),
+                    tags=(tag,) if tag else (),
+                )
+
+        def selected_row() -> LevelPanelRow | None:
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning(
+                    "Панель рівнів",
+                    "Спочатку виберіть гідропост у таблиці.",
+                    parent=window,
+                )
+                return None
+            return rows_by_index.get(selection[0])
+
+        def show_details(_event=None) -> None:
+            selection = tree.selection()
+            if not selection:
+                return
+            item = rows_by_index[selection[0]]
+            details_var.set(
+                item.quality_message
+                or "Зауважень QC для вибраних значень немає."
+            )
+
+        def apply_correction(parameter_code: str) -> None:
+            item = selected_row()
+            if item is None:
+                return
+            if parameter_code == "WATER_LEVEL":
+                observation_id = item.level_observation_id
+                current_value = item.morning_level
+                label = "рівня на 08:00"
+            else:
+                observation_id = item.change_observation_id
+                current_value = item.daily_change
+                label = "добової зміни"
+            if observation_id is None or current_value is None:
+                messagebox.showerror(
+                    "Ручна правка",
+                    f"Для {label} немає первинного значення.",
+                    parent=window,
+                )
+                return
+            new_value = simpledialog.askinteger(
+                "Ручна правка",
+                f"Нове значення {label}, см:",
+                initialvalue=int(current_value),
+                parent=window,
+            )
+            if new_value is None:
+                return
+            reason = simpledialog.askstring(
+                "Причина правки",
+                "Обов'язково вкажіть причину:",
+                parent=window,
+            )
+            if reason is None:
+                return
+            try:
+                create_correction(
+                    db_path,
+                    observation_id,
+                    new_value,
+                    reason=reason,
+                    hydrologist=DEFAULT_HYDROLOGIST,
+                )
+                refresh()
+                tree.selection_set(item.station_index)
+                tree.see(item.station_index)
+                show_details()
+                self._write_log(
+                    f"Створено ручну правку: {item.station_name}, {label}."
+                )
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Ручна правка", str(exc), parent=window)
+
+        def undo_correction(parameter_code: str) -> None:
+            item = selected_row()
+            if item is None:
+                return
+            correction_id = (
+                item.level_correction_id
+                if parameter_code == "WATER_LEVEL"
+                else item.change_correction_id
+            )
+            if correction_id is None:
+                messagebox.showinfo(
+                    "Скасування правки",
+                    "Для вибраного параметра немає активної правки.",
+                    parent=window,
+                )
+                return
+            reason = simpledialog.askstring(
+                "Скасування правки",
+                "Вкажіть причину скасування:",
+                initialvalue="Повторна перевірка первинного значення",
+                parent=window,
+            )
+            if reason is None:
+                return
+            try:
+                cancel_correction(
+                    db_path,
+                    correction_id,
+                    hydrologist=DEFAULT_HYDROLOGIST,
+                    reason=reason,
+                )
+                refresh()
+                tree.selection_set(item.station_index)
+                tree.see(item.station_index)
+                show_details()
+                self._write_log(
+                    f"Скасовано ручну правку: {item.station_name}."
+                )
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Скасування правки", str(exc), parent=window)
+
+        tree.bind("<<TreeviewSelect>>", show_details)
+        actions = tk.Frame(window, bg=BG_MAIN)
+        actions.pack(fill="x", padx=20, pady=(0, 18))
+        button_specs = (
+            ("Виправити рівень", lambda: apply_correction("WATER_LEVEL"), GREEN),
+            ("Виправити ΔH", lambda: apply_correction("DAILY_CHANGE"), GREEN),
+            ("Скасувати правку рівня", lambda: undo_correction("WATER_LEVEL"), BLUE),
+            ("Скасувати правку ΔH", lambda: undo_correction("DAILY_CHANGE"), BLUE),
+        )
+        for column, (label, command, color) in enumerate(button_specs):
+            actions.columnconfigure(column, weight=1)
+            self.make_button(
+                actions,
+                text=label,
+                command=command,
+                bg=color,
+            ).grid(row=0, column=column, sticky="ew", padx=4)
+
+        refresh(initial_rows)
+        if tree.get_children():
+            first = tree.get_children()[0]
+            tree.selection_set(first)
+            show_details()
+
+    def open_extremes_manager(self) -> None:
+        """Відкриває довідник максимальних, середніх і мінімальних рівнів."""
+
+        try:
+            db_path = self._prepare_operational_archive()
+        except (OSError, RuntimeError, ValueError) as exc:
+            messagebox.showerror("Екстремуми", str(exc), parent=self.root)
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("Екстремуми — багаторічні рівні")
+        window.geometry("1040x690")
+        window.minsize(900, 560)
+        window.configure(bg=BG_MAIN)
+        window.transient(self.root)
+
+        tk.Label(
+            window,
+            text="Довідник багаторічних рівнів",
+            bg=BG_MAIN,
+            fg=BLUE_DARK,
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w", padx=20, pady=(18, 4))
+        tk.Label(
+            window,
+            text=(
+                "Значення зберігаються у SQLite й використовуються під час "
+                "формування офіційних Word-бюлетенів."
+            ),
+            bg=BG_MAIN,
+            fg=TEXT_DARK,
+            font=("Segoe UI", 10),
+        ).pack(anchor="w", padx=20, pady=(0, 10))
+
+        body = tk.PanedWindow(window, orient=tk.HORIZONTAL, sashwidth=6, bg=BG_MAIN)
+        body.pack(fill="both", expand=True, padx=20, pady=(0, 10))
+        list_frame = tk.Frame(body, bg=BG_CARD)
+        form = tk.Frame(body, bg=BG_CARD, padx=16, pady=14)
+        body.add(list_frame, stretch="always", minsize=520)
+        body.add(form, stretch="always", minsize=330)
+
+        columns = ("index", "station", "maximum", "average", "minimum")
+        tree = ttk.Treeview(list_frame, columns=columns, show="headings")
+        for column, title, width in (
+            ("index", "Індекс", 70),
+            ("station", "Річка — пост", 270),
+            ("maximum", "Макс.", 70),
+            ("average", "Сер.", 70),
+            ("minimum", "Мін.", 70),
+        ):
+            tree.heading(column, text=title)
+            tree.column(
+                column,
+                width=width,
+                anchor="w" if column == "station" else "center",
+            )
+        scrollbar = tk.Scrollbar(list_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scrollbar.set)
+        tree.pack(side=tk.LEFT, fill="both", expand=True)
+        scrollbar.pack(side=tk.RIGHT, fill="y")
+
+        variables = {
+            "maximum_level": tk.StringVar(master=window),
+            "maximum_date": tk.StringVar(master=window),
+            "average_level": tk.StringVar(master=window),
+            "minimum_level": tk.StringVar(master=window),
+            "minimum_date": tk.StringVar(master=window),
+        }
+        selected_station_var = tk.StringVar(
+            master=window,
+            value="Виберіть гідропост",
+        )
+        tk.Label(
+            form,
+            textvariable=selected_station_var,
+            bg=BG_CARD,
+            fg=BLUE_DARK,
+            justify="left",
+            wraplength=330,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w", pady=(0, 12))
+
+        for label, key in (
+            ("Максимальний рівень, см", "maximum_level"),
+            ("Дата максимуму (необов'язково)", "maximum_date"),
+            ("Середній рівень, см", "average_level"),
+            ("Мінімальний рівень, см", "minimum_level"),
+            ("Дата мінімуму (необов'язково)", "minimum_date"),
+        ):
+            tk.Label(
+                form,
+                text=label,
+                bg=BG_CARD,
+                fg=TEXT_DARK,
+                font=("Segoe UI", 9, "bold"),
+            ).pack(anchor="w", pady=(6, 3))
+            tk.Entry(
+                form,
+                textvariable=variables[key],
+                font=("Segoe UI", 10),
+                relief="solid",
+                bd=1,
+            ).pack(fill="x", ipady=5)
+
+        records: dict[str, dict[str, object]] = {}
+
+        def refresh_extremes(select_index: str | None = None) -> None:
+            records.clear()
+            records.update(read_reference_extremes(db_path))
+            tree.delete(*tree.get_children())
+            for station in HYDRO_STATIONS:
+                record = records.get(station.index, {})
+                tree.insert(
+                    "",
+                    "end",
+                    iid=station.index,
+                    values=(
+                        station.index,
+                        station.name,
+                        record.get("maximum_level", "—"),
+                        record.get("average_level", "—"),
+                        record.get("minimum_level", "—"),
+                    ),
+                )
+            if select_index and tree.exists(select_index):
+                tree.selection_set(select_index)
+                tree.see(select_index)
+
+        def load_selected(_event=None) -> None:
+            selection = tree.selection()
+            if not selection:
+                return
+            station_index = selection[0]
+            station = next(
+                item for item in HYDRO_STATIONS if item.index == station_index
+            )
+            selected_station_var.set(f"{station.index} — {station.name}")
+            record = records.get(station_index, {})
+            for key, variable in variables.items():
+                variable.set(str(record.get(key, "") or ""))
+
+        def optional_date(value: str) -> str:
+            text = value.strip()
+            if not text:
+                return ""
+            try:
+                return datetime.strptime(text, "%d.%m.%Y").strftime("%d.%m.%Y")
+            except ValueError as exc:
+                raise ValueError("Дати екстремумів мають формат ДД.ММ.РРРР.") from exc
+
+        def save_extreme() -> None:
+            selection = tree.selection()
+            if not selection:
+                messagebox.showwarning(
+                    "Екстремуми",
+                    "Спочатку виберіть гідропост.",
+                    parent=window,
+                )
+                return
+            station_index = selection[0]
+            try:
+                maximum = int(variables["maximum_level"].get().strip())
+                average = int(variables["average_level"].get().strip())
+                minimum = int(variables["minimum_level"].get().strip())
+                upsert_reference_extreme(
+                    db_path,
+                    station_index=station_index,
+                    maximum_level=maximum,
+                    average_level=average,
+                    minimum_level=minimum,
+                    maximum_date=optional_date(variables["maximum_date"].get()),
+                    minimum_date=optional_date(variables["minimum_date"].get()),
+                    updated_by=DEFAULT_HYDROLOGIST,
+                )
+                refresh_extremes(station_index)
+                load_selected()
+                self._write_log(
+                    f"Оновлено екстремуми для гідропоста {station_index}."
+                )
+                messagebox.showinfo(
+                    "Екстремуми",
+                    "Довідникові значення збережено.",
+                    parent=window,
+                )
+            except (OSError, ValueError) as exc:
+                messagebox.showerror("Екстремуми", str(exc), parent=window)
+
+        tree.bind("<<TreeviewSelect>>", load_selected)
+        self.make_button(
+            form,
+            text="Зберегти екстремуми",
+            command=save_extreme,
+            bg=GREEN,
+        ).pack(fill="x", pady=(18, 0))
+
+        refresh_extremes()
+        if tree.get_children():
+            first = tree.get_children()[0]
+            tree.selection_set(first)
+            load_selected()
+
     def _request(self) -> WorkflowRequest:
         region_keys = tuple(
             region.key
@@ -1313,9 +1899,10 @@ class HydroBulletinApp:
             )
             return
 
-        self.run_button.configure(state="disabled")
-        self.status_var.set("Виконується…")
-        self._write_log("Запуск робочого сценарію…", clear=True)
+        self.run_button.configure(state="disabled", text="Створюю…")
+        self.status_var.set("Створюю вибрані матеріали…")
+        self._write_log("Запуск: перевіряю вибрані параметри.", clear=True)
+        self.root.update_idletasks()
         threading.Thread(
             target=self._worker,
             args=(request,),
@@ -1324,16 +1911,23 @@ class HydroBulletinApp:
 
     def _worker(self, request: WorkflowRequest) -> None:
         try:
-            result = execute_workflow(request)
+            result = execute_workflow(
+                request,
+                progress=lambda message: self.root.after(
+                    0,
+                    self._write_log,
+                    message,
+                ),
+            )
         except Exception as exc:
             self.root.after(0, self._finish_error, exc)
             return
         self.root.after(0, self._finish_success, result)
 
     def _finish_error(self, exc: Exception) -> None:
-        self.run_button.configure(state="normal")
-        self.status_var.set("Помилка.")
-        self._write_log(f"ПОМИЛКА: {exc}")
+        self.run_button.configure(state="normal", text=RUN_BUTTON_TEXT)
+        self.status_var.set("Помилка. Матеріали не створено.")
+        self._write_log(f"Помилка: {exc}")
         messagebox.showerror(
             "HydroBulletin",
             str(exc),
@@ -1341,8 +1935,8 @@ class HydroBulletinApp:
         )
 
     def _finish_success(self, result: WorkflowResult) -> None:
-        self.run_button.configure(state="normal")
-        self.status_var.set("Завершено.")
+        self.run_button.configure(state="normal", text=RUN_BUTTON_TEXT)
+        self.status_var.set("Створено.")
 
         gcst_summary = gcst_usage_summary(
             result,
@@ -1373,6 +1967,19 @@ class HydroBulletinApp:
             lines.append("Зауваження:")
             lines.extend(f"• {warning}" for warning in result.warnings)
         self._write_log("\n".join(lines))
+
+        created_paths = [item.output_path for item in result.bulletins]
+        if result.map_result is not None:
+            created_paths.append(result.map_result.output_path)
+        created_paths.extend(item.output_path for item in result.charts)
+        if created_paths:
+            output_folder = created_paths[0].parent
+            names = "\n".join(f"• {path.name}" for path in created_paths)
+            messagebox.showinfo(
+                "HydroBulletin — Створено",
+                f"Створено матеріали:\n\n{names}\n\nПапка:\n{output_folder}",
+                parent=self.root,
+            )
 
     def _write_log(self, text: str, *, clear: bool = False) -> None:
         if not hasattr(self, "log_text"):

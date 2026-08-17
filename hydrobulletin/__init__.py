@@ -1,15 +1,23 @@
 """HydroBulletin — автоматизація оперативних гідрологічних даних."""
 
 from .archive import (
+    SCHEMA_VERSION,
+    CorrectionResult,
     ImportResult,
     ProductResult,
     archive_raw_text,
     archive_summary,
+    cancel_correction,
+    create_correction,
     import_observations,
     initialize_archive,
     query_observations,
+    read_corrections,
     read_product_provenance,
+    read_reference_extremes,
     register_product,
+    seed_reference_extreme,
+    upsert_reference_extreme,
 )
 from .batch import BatchImportResult, discover_batch_files, run_batch_import
 from .bulletins import BulletinResult, generate_bulletin, generate_bulletins
@@ -27,11 +35,14 @@ from .decoder import (
     parse_change,
     parse_discharge,
     parse_evening_level,
+    parse_ice_group,
+    parse_ice_thickness,
     parse_level,
     parse_precipitation,
     parse_temperature,
 )
 from .models import HydroMeasurement, HydroObservation, Station
+from .levels import LevelPanelRow, build_level_panel_rows
 from .output_paths import MATERIALS_DIR_NAME, MONTHS_UA_FOLDER, dated_output_dir
 from .maps import (
     LVIV_MAP_STATION_INDEXES,
@@ -42,6 +53,7 @@ from .maps import (
 from .pipeline import PipelineResult, run_import_pipeline
 from .quality import (
     INCONSISTENT_CHANGE,
+    CORRECTED,
     MISSING,
     OUT_OF_RANGE,
     SUSPICIOUS,
@@ -69,7 +81,7 @@ from .sources import (
 )
 from .workflow import WorkflowRequest, WorkflowResult, execute_workflow
 
-__version__ = "0.4.1.3"
+__version__ = "0.5.1"
 
 __all__ = [
     "HydroObservation",
@@ -96,15 +108,25 @@ __all__ = [
     "parse_level",
     "parse_change",
     "parse_evening_level",
+    "parse_ice_group",
+    "parse_ice_thickness",
     "parse_temperature",
     "parse_precipitation",
     "parse_discharge",
     "initialize_archive",
+    "SCHEMA_VERSION",
     "archive_summary",
     "archive_raw_text",
     "import_observations",
     "ImportResult",
     "ProductResult",
+    "CorrectionResult",
+    "create_correction",
+    "cancel_correction",
+    "read_corrections",
+    "seed_reference_extreme",
+    "upsert_reference_extreme",
+    "read_reference_extremes",
     "query_observations",
     "register_product",
     "read_product_provenance",
@@ -116,6 +138,7 @@ __all__ = [
     "SUSPICIOUS",
     "OUT_OF_RANGE",
     "INCONSISTENT_CHANGE",
+    "CORRECTED",
     "discover_batch_files",
     "run_batch_import",
     "BatchImportResult",
@@ -139,4 +162,6 @@ __all__ = [
     "WorkflowRequest",
     "WorkflowResult",
     "execute_workflow",
+    "LevelPanelRow",
+    "build_level_panel_rows",
 ]

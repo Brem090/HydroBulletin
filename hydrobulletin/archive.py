@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 import sqlite3
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from typing import Iterable, Mapping, Sequence
 
 from .models import HydroObservation, Station, observation_measurements
 
-SCHEMA_VERSION = "3"
+SCHEMA_VERSION = "4"
 
 BASE_SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -49,6 +50,7 @@ CREATE TABLE IF NOT EXISTS observations (
     observed_at TEXT NOT NULL,
     parameter_code TEXT NOT NULL,
     value REAL,
+    text_value TEXT NOT NULL DEFAULT '',
     unit TEXT NOT NULL,
     quality_status TEXT NOT NULL DEFAULT 'NOT_CHECKED',
     quality_message TEXT NOT NULL DEFAULT '',
@@ -68,6 +70,45 @@ CREATE INDEX IF NOT EXISTS idx_observations_parameter_time
 ON observations(parameter_code, observed_at);
 """
 
+CORRECTIONS_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS corrections (
+    correction_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observation_id INTEGER NOT NULL,
+    original_value REAL NOT NULL,
+    corrected_value REAL NOT NULL,
+    reason TEXT NOT NULL,
+    hydrologist TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1 CHECK (is_active IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cancelled_at TEXT,
+    cancelled_by TEXT NOT NULL DEFAULT '',
+    cancellation_reason TEXT NOT NULL DEFAULT '',
+    FOREIGN KEY (observation_id) REFERENCES observations(observation_id)
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_corrections_one_active
+ON corrections(observation_id)
+WHERE is_active = 1;
+
+CREATE INDEX IF NOT EXISTS idx_corrections_observation
+ON corrections(observation_id, created_at);
+
+CREATE TABLE IF NOT EXISTS reference_extremes (
+    station_index TEXT PRIMARY KEY,
+    maximum_level INTEGER NOT NULL,
+    maximum_date TEXT NOT NULL DEFAULT '',
+    average_level INTEGER NOT NULL,
+    minimum_level INTEGER NOT NULL,
+    minimum_date TEXT NOT NULL DEFAULT '',
+    source TEXT NOT NULL DEFAULT 'manual',
+    updated_by TEXT NOT NULL DEFAULT '',
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (station_index) REFERENCES stations(station_index),
+    CHECK (minimum_level <= average_level),
+    CHECK (average_level <= maximum_level)
+);
+"""
+
 PRODUCTS_SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS products (
     product_id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,9 +124,13 @@ CREATE TABLE IF NOT EXISTS products (
 CREATE TABLE IF NOT EXISTS product_observations (
     product_id INTEGER NOT NULL,
     observation_id INTEGER NOT NULL,
+    correction_id INTEGER,
+    effective_value REAL,
+    effective_text_value TEXT NOT NULL DEFAULT '',
     PRIMARY KEY (product_id, observation_id),
     FOREIGN KEY (product_id) REFERENCES products(product_id) ON DELETE CASCADE,
-    FOREIGN KEY (observation_id) REFERENCES observations(observation_id)
+    FOREIGN KEY (observation_id) REFERENCES observations(observation_id),
+    FOREIGN KEY (correction_id) REFERENCES corrections(correction_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_products_date_region
@@ -109,6 +154,15 @@ class ProductResult:
 
     product_id: int
     linked_observations: int
+
+
+@dataclass(frozen=True)
+class CorrectionResult:
+    """Підсумок створення або скасування аудитовної ручної правки."""
+
+    correction_id: int
+    observation_id: int
+    active: bool
 
 
 def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
@@ -223,6 +277,13 @@ def _ensure_observations_schema(connection: sqlite3.Connection) -> None:
         connection.executescript(OBSERVATIONS_SCHEMA_SQL)
         return
     if "parameter_code" in columns:
+        if "text_value" not in columns:
+            connection.execute(
+                """
+                ALTER TABLE observations
+                ADD COLUMN text_value TEXT NOT NULL DEFAULT ''
+                """
+            )
         if "quality_message" not in columns:
             connection.execute(
                 """
@@ -280,6 +341,40 @@ def _ensure_observations_schema(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE observations_week1")
 
 
+def _ensure_product_observation_columns(
+    connection: sqlite3.Connection,
+) -> None:
+    """Додає знімок активної правки до зв'язку продукту з даними."""
+
+    columns = _table_columns(connection, "product_observations")
+    additions = {
+        "correction_id": "INTEGER",
+        "effective_value": "REAL",
+        "effective_text_value": "TEXT NOT NULL DEFAULT ''",
+    }
+    for name, definition in additions.items():
+        if name not in columns:
+            connection.execute(
+                f"ALTER TABLE product_observations ADD COLUMN {name} {definition}"
+            )
+    connection.execute(
+        """
+        UPDATE product_observations
+        SET effective_value = (
+                SELECT o.value
+                FROM observations AS o
+                WHERE o.observation_id = product_observations.observation_id
+            ),
+            effective_text_value = COALESCE((
+                SELECT o.text_value
+                FROM observations AS o
+                WHERE o.observation_id = product_observations.observation_id
+            ), '')
+        WHERE correction_id IS NULL
+        """
+    )
+
+
 def initialize_archive(db_path: Path, stations: Iterable[Station]) -> Path:
     """Створює або безпечно оновлює SQLite-базу та довідник постів."""
 
@@ -291,7 +386,9 @@ def initialize_archive(db_path: Path, stations: Iterable[Station]) -> Path:
         connection.executescript(BASE_SCHEMA_SQL)
         _ensure_import_columns(connection)
         _ensure_observations_schema(connection)
+        connection.executescript(CORRECTIONS_SCHEMA_SQL)
         connection.executescript(PRODUCTS_SCHEMA_SQL)
+        _ensure_product_observation_columns(connection)
         connection.execute(
             "INSERT OR REPLACE INTO schema_meta(key, value) VALUES (?, ?)",
             ("schema_version", SCHEMA_VERSION),
@@ -460,16 +557,17 @@ def import_observations(
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO observations(
-                        station_index, observed_at, parameter_code, value, unit,
-                        quality_status, quality_message, source_type, source_file,
-                        raw_record, import_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        station_index, observed_at, parameter_code, value,
+                        text_value, unit, quality_status, quality_message,
+                        source_type, source_file, raw_record, import_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         measurement.station_index,
                         measurement.observed_at.isoformat(timespec="seconds"),
                         measurement.parameter_code,
                         measurement.value,
+                        measurement.text_value,
                         measurement.unit,
                         measurement.quality_status,
                         measurement.quality_message,
@@ -507,6 +605,8 @@ def archive_summary(db_path: Path) -> dict[str, int]:
             "stations",
             "imports",
             "observations",
+            "corrections",
+            "reference_extremes",
             "products",
             "product_observations",
         ):
@@ -526,12 +626,27 @@ def read_observations(db_path: Path) -> list[dict[str, object]]:
         rows = connection.execute(
             """
             SELECT o.observation_id, o.station_index, o.observed_at,
-                   o.parameter_code, o.value, o.unit, o.quality_status,
-                   o.quality_message, o.source_type, o.source_file,
-                   o.raw_record, o.import_id, i.source_name, i.message_type,
-                   i.bulletin_date, i.raw_path
+                   o.parameter_code, o.value AS original_value,
+                   o.text_value AS original_text_value,
+                   COALESCE(c.corrected_value, o.value) AS value,
+                   o.text_value, o.unit,
+                   CASE WHEN c.correction_id IS NULL
+                        THEN o.quality_status ELSE 'CORRECTED' END
+                       AS quality_status,
+                   CASE WHEN c.correction_id IS NULL
+                        THEN o.quality_message
+                        ELSE 'Ручна правка: ' || c.reason END
+                       AS quality_message,
+                   o.quality_status AS original_quality_status,
+                   o.quality_message AS original_quality_message,
+                   o.source_type, o.source_file, o.raw_record, o.import_id,
+                   i.source_name, i.message_type, i.bulletin_date, i.raw_path,
+                   c.correction_id, c.corrected_value, c.reason AS correction_reason,
+                   c.hydrologist AS corrected_by, c.created_at AS corrected_at
             FROM observations AS o
             JOIN imports AS i ON i.import_id = o.import_id
+            LEFT JOIN corrections AS c
+              ON c.observation_id = o.observation_id AND c.is_active = 1
             ORDER BY o.station_index, o.observed_at, o.parameter_code
             """
         ).fetchall()
@@ -575,20 +690,373 @@ def query_observations(
         rows = connection.execute(
             f"""
             SELECT o.observation_id, o.station_index, s.station_name,
-                   o.observed_at, o.parameter_code, o.value, o.unit,
-                   o.quality_status, o.quality_message, o.source_type,
-                   o.source_file, o.raw_record, o.import_id,
+                   o.observed_at, o.parameter_code,
+                   o.value AS original_value,
+                   o.text_value AS original_text_value,
+                   COALESCE(c.corrected_value, o.value) AS value,
+                   o.text_value, o.unit,
+                   CASE WHEN c.correction_id IS NULL
+                        THEN o.quality_status ELSE 'CORRECTED' END
+                       AS quality_status,
+                   CASE WHEN c.correction_id IS NULL
+                        THEN o.quality_message
+                        ELSE 'Ручна правка: ' || c.reason END
+                       AS quality_message,
+                   o.quality_status AS original_quality_status,
+                   o.quality_message AS original_quality_message,
+                   o.source_type, o.source_file, o.raw_record, o.import_id,
                    i.source_name, i.message_type, i.bulletin_date, i.raw_path,
-                   i.source_hash
+                   i.source_hash, c.correction_id, c.corrected_value,
+                   c.reason AS correction_reason,
+                   c.hydrologist AS corrected_by, c.created_at AS corrected_at
             FROM observations AS o
             JOIN stations AS s ON s.station_index = o.station_index
             JOIN imports AS i ON i.import_id = o.import_id
+            LEFT JOIN corrections AS c
+              ON c.observation_id = o.observation_id AND c.is_active = 1
             {where_sql}
             ORDER BY o.observed_at, o.station_index, o.parameter_code
             """,
             values,
         ).fetchall()
         return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+CORRECTABLE_PARAMETERS = {
+    "WATER_LEVEL": (-1000.0, 10000.0),
+    "DAILY_CHANGE": (-5000.0, 5000.0),
+}
+
+
+def create_correction(
+    db_path: Path,
+    observation_id: int,
+    corrected_value: float,
+    *,
+    reason: str,
+    hydrologist: str,
+) -> CorrectionResult:
+    """Створює одну активну правку, не змінюючи первинного значення."""
+
+    clean_reason = reason.strip()
+    clean_hydrologist = hydrologist.strip()
+    value = float(corrected_value)
+    if not clean_reason:
+        raise ValueError("Для ручної правки потрібно вказати причину.")
+    if not clean_hydrologist:
+        raise ValueError("Для ручної правки потрібно вказати автора.")
+    if not math.isfinite(value):
+        raise ValueError("Виправлене значення має бути скінченним числом.")
+    if not value.is_integer():
+        raise ValueError("Рівень і добову зміну потрібно вказувати цілими сантиметрами.")
+
+    connection = sqlite3.connect(Path(db_path))
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        row = connection.execute(
+            """
+            SELECT parameter_code, value
+            FROM observations
+            WHERE observation_id = ?
+            """,
+            (int(observation_id),),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Спостереження {observation_id} не знайдено.")
+
+        parameter_code = str(row[0])
+        original_value = row[1]
+        if parameter_code not in CORRECTABLE_PARAMETERS:
+            raise ValueError(
+                "Ручні правки дозволено лише для рівня та добової зміни."
+            )
+        if original_value is None:
+            raise ValueError("Відсутнє первинне значення не можна виправити.")
+
+        minimum, maximum = CORRECTABLE_PARAMETERS[parameter_code]
+        if value < minimum or value > maximum:
+            raise ValueError(
+                f"Виправлене значення виходить за допустимий інтервал "
+                f"{minimum:g}…{maximum:g}."
+            )
+        if abs(value - float(original_value)) <= 1e-9:
+            raise ValueError("Виправлене значення збігається з первинним.")
+
+        active = connection.execute(
+            """
+            SELECT correction_id
+            FROM corrections
+            WHERE observation_id = ? AND is_active = 1
+            """,
+            (int(observation_id),),
+        ).fetchone()
+        if active is not None:
+            raise ValueError(
+                "Для цього спостереження вже є активна правка. "
+                "Спочатку її потрібно скасувати."
+            )
+
+        cursor = connection.execute(
+            """
+            INSERT INTO corrections(
+                observation_id, original_value, corrected_value,
+                reason, hydrologist
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                int(observation_id),
+                float(original_value),
+                value,
+                clean_reason,
+                clean_hydrologist,
+            ),
+        )
+        if cursor.lastrowid is None:
+            raise RuntimeError("Не вдалося отримати ID ручної правки.")
+        connection.commit()
+        return CorrectionResult(int(cursor.lastrowid), int(observation_id), True)
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def cancel_correction(
+    db_path: Path,
+    correction_id: int,
+    *,
+    hydrologist: str,
+    reason: str,
+) -> CorrectionResult:
+    """Скасовує активну правку, зберігаючи її повну історію."""
+
+    clean_hydrologist = hydrologist.strip()
+    clean_reason = reason.strip()
+    if not clean_hydrologist:
+        raise ValueError("Для скасування правки потрібно вказати автора.")
+    if not clean_reason:
+        raise ValueError("Для скасування правки потрібно вказати причину.")
+
+    connection = sqlite3.connect(Path(db_path))
+    try:
+        row = connection.execute(
+            """
+            SELECT observation_id, is_active
+            FROM corrections
+            WHERE correction_id = ?
+            """,
+            (int(correction_id),),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Правку {correction_id} не знайдено.")
+        if int(row[1]) != 1:
+            raise ValueError("Цю правку вже скасовано.")
+
+        connection.execute(
+            """
+            UPDATE corrections
+            SET is_active = 0,
+                cancelled_at = CURRENT_TIMESTAMP,
+                cancelled_by = ?,
+                cancellation_reason = ?
+            WHERE correction_id = ? AND is_active = 1
+            """,
+            (clean_hydrologist, clean_reason, int(correction_id)),
+        )
+        connection.commit()
+        return CorrectionResult(int(correction_id), int(row[0]), False)
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def read_corrections(
+    db_path: Path,
+    *,
+    observation_id: int | None = None,
+    active_only: bool = False,
+) -> list[dict[str, object]]:
+    """Повертає історію правок для аудиту або Панелі рівнів."""
+
+    clauses: list[str] = []
+    values: list[object] = []
+    if observation_id is not None:
+        clauses.append("c.observation_id = ?")
+        values.append(int(observation_id))
+    if active_only:
+        clauses.append("c.is_active = 1")
+    where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+
+    connection = sqlite3.connect(Path(db_path))
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            f"""
+            SELECT c.correction_id, c.observation_id, o.station_index,
+                   s.station_name, o.observed_at, o.parameter_code,
+                   c.original_value, c.corrected_value, c.reason,
+                   c.hydrologist, c.is_active, c.created_at,
+                   c.cancelled_at, c.cancelled_by, c.cancellation_reason
+            FROM corrections AS c
+            JOIN observations AS o ON o.observation_id = c.observation_id
+            JOIN stations AS s ON s.station_index = o.station_index
+            {where_sql}
+            ORDER BY c.created_at, c.correction_id
+            """,
+            values,
+        ).fetchall()
+        return [dict(row) for row in rows]
+    finally:
+        connection.close()
+
+
+def _validated_extreme_levels(
+    maximum_level: int,
+    average_level: int,
+    minimum_level: int,
+) -> tuple[int, int, int]:
+    values = (int(maximum_level), int(average_level), int(minimum_level))
+    maximum, average, minimum = values
+    if not minimum <= average <= maximum:
+        raise ValueError(
+            "Має виконуватися умова: мінімальний ≤ середній ≤ максимальний."
+        )
+    return maximum, average, minimum
+
+
+def seed_reference_extreme(
+    db_path: Path,
+    *,
+    station_index: str,
+    maximum_level: int,
+    average_level: int,
+    minimum_level: int,
+    source: str = "template",
+) -> bool:
+    """Додає відсутній довідниковий запис, не перезаписуючи правки."""
+
+    maximum, average, minimum = _validated_extreme_levels(
+        maximum_level,
+        average_level,
+        minimum_level,
+    )
+    connection = sqlite3.connect(Path(db_path))
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        cursor = connection.execute(
+            """
+            INSERT OR IGNORE INTO reference_extremes(
+                station_index, maximum_level, average_level,
+                minimum_level, source
+            ) VALUES (?, ?, ?, ?, ?)
+            """,
+            (station_index, maximum, average, minimum, source.strip() or "template"),
+        )
+        connection.commit()
+        return cursor.rowcount == 1
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def upsert_reference_extreme(
+    db_path: Path,
+    *,
+    station_index: str,
+    maximum_level: int,
+    average_level: int,
+    minimum_level: int,
+    maximum_date: str = "",
+    minimum_date: str = "",
+    updated_by: str,
+) -> None:
+    """Перевіряє та зберігає багаторічні рівні одного поста."""
+
+    author = updated_by.strip()
+    if not author:
+        raise ValueError("Потрібно вказати автора зміни довідника.")
+    maximum, average, minimum = _validated_extreme_levels(
+        maximum_level,
+        average_level,
+        minimum_level,
+    )
+    connection = sqlite3.connect(Path(db_path))
+    try:
+        connection.execute("PRAGMA foreign_keys = ON")
+        connection.execute(
+            """
+            INSERT INTO reference_extremes(
+                station_index, maximum_level, maximum_date,
+                average_level, minimum_level, minimum_date,
+                source, updated_by
+            ) VALUES (?, ?, ?, ?, ?, ?, 'manual', ?)
+            ON CONFLICT(station_index) DO UPDATE SET
+                maximum_level = excluded.maximum_level,
+                maximum_date = excluded.maximum_date,
+                average_level = excluded.average_level,
+                minimum_level = excluded.minimum_level,
+                minimum_date = excluded.minimum_date,
+                source = 'manual',
+                updated_by = excluded.updated_by,
+                updated_at = CURRENT_TIMESTAMP
+            """,
+            (
+                station_index,
+                maximum,
+                maximum_date.strip(),
+                average,
+                minimum,
+                minimum_date.strip(),
+                author,
+            ),
+        )
+        connection.commit()
+    except sqlite3.IntegrityError as exc:
+        connection.rollback()
+        raise ValueError(f"Гідропост {station_index} відсутній у довіднику.") from exc
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.close()
+
+
+def read_reference_extremes(
+    db_path: Path,
+    station_indexes: Sequence[str] = (),
+) -> dict[str, dict[str, object]]:
+    """Читає довідник екстремумів, за потреби лише для вибраних постів."""
+
+    values: list[object] = []
+    where_sql = ""
+    if station_indexes:
+        placeholders = ", ".join("?" for _ in station_indexes)
+        where_sql = f"WHERE e.station_index IN ({placeholders})"
+        values.extend(station_indexes)
+
+    connection = sqlite3.connect(Path(db_path))
+    connection.row_factory = sqlite3.Row
+    try:
+        rows = connection.execute(
+            f"""
+            SELECT e.station_index, s.station_name, e.maximum_level,
+                   e.maximum_date, e.average_level, e.minimum_level,
+                   e.minimum_date, e.source, e.updated_by, e.updated_at
+            FROM reference_extremes AS e
+            JOIN stations AS s ON s.station_index = e.station_index
+            {where_sql}
+            ORDER BY e.station_index
+            """,
+            values,
+        ).fetchall()
+        return {str(row["station_index"]): dict(row) for row in rows}
     finally:
         connection.close()
 
@@ -659,12 +1127,39 @@ def register_product(
             (product_id,),
         )
         for observation_id in normalized_ids:
+            snapshot = connection.execute(
+                """
+                SELECT o.value, o.text_value, c.correction_id,
+                       c.corrected_value
+                FROM observations AS o
+                LEFT JOIN corrections AS c
+                  ON c.observation_id = o.observation_id AND c.is_active = 1
+                WHERE o.observation_id = ?
+                """,
+                (observation_id,),
+            ).fetchone()
+            if snapshot is None:
+                raise ValueError(
+                    f"Спостереження {observation_id} для provenance не знайдено."
+                )
+            original_value, text_value, correction_id, corrected_value = snapshot
+            effective_value = (
+                corrected_value if correction_id is not None else original_value
+            )
             connection.execute(
                 """
-                INSERT INTO product_observations(product_id, observation_id)
-                VALUES (?, ?)
+                INSERT INTO product_observations(
+                    product_id, observation_id, correction_id,
+                    effective_value, effective_text_value
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
-                (product_id, observation_id),
+                (
+                    product_id,
+                    observation_id,
+                    correction_id,
+                    effective_value,
+                    str(text_value or ""),
+                ),
             )
         connection.commit()
         return ProductResult(product_id, len(normalized_ids))
@@ -689,13 +1184,23 @@ def read_product_provenance(
             SELECT p.product_id, p.product_type, p.region_key,
                    p.bulletin_date, p.output_path, o.observation_id,
                    o.station_index, o.observed_at, o.parameter_code,
-                   o.value, o.quality_status, o.quality_message,
+                   o.value AS original_value,
+                   o.text_value AS original_text_value,
+                   po.effective_value AS value,
+                   po.effective_text_value AS text_value,
+                   o.quality_status, o.quality_message,
                    i.import_id, i.source_name, i.source_type,
-                   i.message_type, i.raw_path, i.source_hash
+                   i.message_type, i.raw_path, i.source_hash,
+                   po.correction_id, c.corrected_value,
+                   c.reason AS correction_reason,
+                   c.hydrologist AS corrected_by,
+                   c.created_at AS corrected_at,
+                   c.is_active AS correction_currently_active
             FROM products AS p
             JOIN product_observations AS po ON po.product_id = p.product_id
             JOIN observations AS o ON o.observation_id = po.observation_id
             JOIN imports AS i ON i.import_id = o.import_id
+            LEFT JOIN corrections AS c ON c.correction_id = po.correction_id
             WHERE p.product_id = ?
             ORDER BY o.station_index, o.observed_at, o.parameter_code
             """,

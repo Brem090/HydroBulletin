@@ -12,8 +12,13 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
-from .archive import ProductResult, query_observations, register_product
-from .quality import MISSING, VALID, worst_quality_status
+from .archive import (
+    ProductResult,
+    query_observations,
+    read_reference_extremes,
+    register_product,
+)
+from .quality import CORRECTED, MISSING, VALID, worst_quality_status
 from .regions import RegionConfig
 
 
@@ -23,11 +28,14 @@ PARAMETERS = (
     "PRECIPITATION",
     "WATER_TEMPERATURE",
     "DISCHARGE",
+    "ICE_PHENOMENA",
+    "ICE_THICKNESS",
 )
 
 QUALITY_DISPLAY = {
     "INCONSISTENT_CHANGE": "INCONSISTENT\nCHANGE",
     "OUT_OF_RANGE": "OUT OF\nRANGE",
+    CORRECTED: "ВИПРАВЛЕНО",
 }
 
 PRECIPITATION_FONT_SIZE_PT = 10
@@ -58,6 +66,11 @@ class BulletinRow:
     precipitation: float | None
     water_temperature: float | None
     discharge: float | None
+    ice_phenomena: str
+    ice_thickness: float | None
+    maximum_level: int | None
+    average_level: int | None
+    minimum_level: int | None
     quality_status: str
     quality_message: str
     precipitation_source: str
@@ -135,6 +148,7 @@ def build_bulletin_rows(
         station_indexes=tuple(dict.fromkeys(hydro_indexes + meteo_indexes)),
         parameter_codes=PARAMETERS,
     )
+    extremes = read_reference_extremes(db_path, tuple(hydro_indexes))
     grouped: dict[str, list[dict[str, object]]] = {}
     for record in records:
         grouped.setdefault(str(record["station_index"]), []).append(record)
@@ -194,6 +208,12 @@ def build_bulletin_rows(
             row = selected[parameter]
             return None if row is None or row["value"] is None else float(row["value"])
 
+        def text_value(parameter: str) -> str:
+            row = selected[parameter]
+            return "" if row is None else str(row.get("text_value") or "")
+
+        extreme = extremes.get(station.index, {})
+
         observation_ids = tuple(
             sorted(
                 {
@@ -212,6 +232,23 @@ def build_bulletin_rows(
                 precipitation=value("PRECIPITATION"),
                 water_temperature=value("WATER_TEMPERATURE"),
                 discharge=value("DISCHARGE"),
+                ice_phenomena=text_value("ICE_PHENOMENA"),
+                ice_thickness=value("ICE_THICKNESS"),
+                maximum_level=(
+                    None
+                    if extreme.get("maximum_level") is None
+                    else int(extreme["maximum_level"])
+                ),
+                average_level=(
+                    None
+                    if extreme.get("average_level") is None
+                    else int(extreme["average_level"])
+                ),
+                minimum_level=(
+                    None
+                    if extreme.get("minimum_level") is None
+                    else int(extreme["minimum_level"])
+                ),
                 quality_status=quality_status,
                 quality_message=" ".join(dict.fromkeys(quality_messages)),
                 precipitation_source=precipitation_source,
@@ -411,6 +448,34 @@ def _find_bulletin_table(doc: Document):
     )
 
 
+def _ice_text(item: BulletinRow) -> str:
+    parts: list[str] = []
+    if item.ice_phenomena:
+        parts.append(item.ice_phenomena)
+    if item.ice_thickness is not None:
+        parts.append(f"{_format_number(item.ice_thickness, 1)} см")
+    return ", ".join(parts)
+
+
+def _apply_ice_header(table, rows: Sequence[BulletinRow]) -> None:
+    has_ice = any(item.ice_phenomena for item in rows)
+    has_thickness = any(item.ice_thickness is not None for item in rows)
+    if not has_ice and not has_thickness:
+        return
+    title = (
+        "Температура води (°С), льодові явища та товщина криги (см)"
+        if has_thickness
+        else "Температура води (°С) та льодові явища"
+    )
+    seen_cells: set[object] = set()
+    for header_row in table.rows[:2]:
+        cell = header_row.cells[9]
+        if cell._tc in seen_cells:
+            continue
+        seen_cells.add(cell._tc)
+        _set_cell_text(cell, title, font_size_pt=8)
+
+
 def _fill_official_table(table, rows: Sequence[BulletinRow]) -> None:
     """Заповнює лише змінні поля, не торкаючись порогів і багаторічних даних."""
 
@@ -421,14 +486,23 @@ def _fill_official_table(table, rows: Sequence[BulletinRow]) -> None:
             f"очікується {expected_rows}, отримано {len(table.rows)}."
         )
 
+    _apply_ice_header(table, rows)
     for position, item in enumerate(rows, start=2):
         target = table.rows[position]
+        ice_text = _ice_text(item)
         values = {
             1: _format_number(item.level, 1),
             2: _format_change(item.change),
             3: _format_precipitation(item.precipitation),
-            9: _format_number(item.water_temperature, 1),
+            9: ice_text or _format_number(item.water_temperature, 1),
         }
+        for column, value in (
+            (6, item.maximum_level),
+            (7, item.average_level),
+            (8, item.minimum_level),
+        ):
+            if value is not None:
+                values[column] = _format_number(value, 0)
         for column, text in values.items():
             _set_cell_text(
                 target.cells[column],
@@ -444,6 +518,7 @@ def _fill_extended_table(table, rows: Sequence[BulletinRow]) -> None:
 
     by_index = _station_rows(table)
     warning_color = RGBColor(192, 0, 0)
+    corrected_color = RGBColor(0, 112, 84)
     for position, item in enumerate(rows, start=1):
         row = by_index.get(item.station_index)
         if row is None:
@@ -459,7 +534,7 @@ def _fill_extended_table(table, rows: Sequence[BulletinRow]) -> None:
             _format_number(item.level, 1),
             _format_change(item.change),
             _format_precipitation(item.precipitation),
-            _format_number(item.water_temperature, 1),
+            _ice_text(item) or _format_number(item.water_temperature, 1),
             _format_number(item.discharge, 3),
             QUALITY_DISPLAY.get(item.quality_status, item.quality_status),
             item.precipitation_source,
@@ -467,7 +542,14 @@ def _fill_extended_table(table, rows: Sequence[BulletinRow]) -> None:
         for column, text in enumerate(values):
             _set_cell_text(row.cells[column], text)
 
-        if item.quality_status != VALID:
+        if item.quality_status == CORRECTED:
+            _set_cell_text(
+                row.cells[7],
+                QUALITY_DISPLAY[item.quality_status],
+                color=corrected_color,
+            )
+            _shade_cell(row.cells[7], "E2F0D9")
+        elif item.quality_status != VALID:
             _set_cell_text(
                 row.cells[7],
                 QUALITY_DISPLAY.get(item.quality_status, item.quality_status),
@@ -550,6 +632,17 @@ def generate_bulletin(
             "precipitation_mapping_applied": True,
             "template_layout": template_layout,
             "quality_counts": quality_counts,
+            "reference_extremes": {
+                row.station_index: {
+                    "maximum_level": row.maximum_level,
+                    "average_level": row.average_level,
+                    "minimum_level": row.minimum_level,
+                }
+                for row in rows
+                if row.maximum_level is not None
+                and row.average_level is not None
+                and row.minimum_level is not None
+            },
         },
     )
     return BulletinResult(region.key, output_path, rows, product)

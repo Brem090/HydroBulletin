@@ -5,11 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Sequence
+from typing import Callable, Sequence
 
 from .archive import archive_summary, initialize_archive
 from .bulletins import BulletinResult, generate_bulletins
 from .charts import ChartResult, create_charts
+from .extremes import seed_extremes_from_templates
 from .maps import MapResult, create_lviv_map, map_output_name
 from .meteorology import (
     MeteoPipelineResult,
@@ -269,16 +270,33 @@ def _meteo_source(
     return FallbackDataSource(tuple(sources))
 
 
-def execute_workflow(request: WorkflowRequest) -> WorkflowResult:
+def execute_workflow(
+    request: WorkflowRequest,
+    progress: Callable[[str], None] | None = None,
+) -> WorkflowResult:
     """Виконує імпорт, QC і формування вибраних службових матеріалів."""
 
+    def report(message: str) -> None:
+        if progress is not None:
+            progress(message)
+
+    report("Перевіряю параметри запуску.")
     _validate_request(request)
     warnings: list[str] = []
     selected_regions = resolve_regions(request.region_keys)
+    report("Готую SQLite-архів і довідники.")
     initialize_archive(request.db_path, ALL_STATIONS)
+    seeded_extremes = seed_extremes_from_templates(
+        request.db_path,
+        REGIONS,
+        request.templates_dir,
+    )
+    if seeded_extremes:
+        report(f"Перенесено довідникових записів екстремумів: {seeded_extremes}.")
 
     connections: tuple[OnlineConnection, ...] = ()
     if request.source_mode in {"auto", "online"}:
+        report("Перевіряю налаштування основного сервера та дзеркала ГЦСТ.")
         connections = _load_online_connections(request, warnings)
 
     message_types = tuple(
@@ -291,6 +309,7 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowResult:
 
     hydro_results: list[PipelineResult] = []
     for message_type in message_types:
+        report(f"Отримую та імпортую {message_type}.")
         source = _hydro_source(request, message_type, connections)
         result = run_import_pipeline(
             source,
@@ -315,6 +334,7 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowResult:
     meteo_result: MeteoPipelineResult | None = None
     meteo_source = _meteo_source(request, connections)
     if meteo_source is not None:
+        report("Отримую та імпортую SYNOP-опади.")
         try:
             meteo_result = run_meteo_import_pipeline(
                 meteo_source,
@@ -340,12 +360,14 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowResult:
             "гідрологічні опади або позначку про відсутність даних."
         )
 
+    report("Виконую первинний контроль якості.")
     quality_summary = run_initial_quality_control(
         request.db_path,
         request.bulletin_date,
     )
     bulletin_results: tuple[BulletinResult, ...] = ()
     if request.create_bulletins:
+        report(f"Створюю Word-бюлетені: {len(selected_regions)}.")
         mapping = load_precipitation_mapping(request.mapping_path)
         bulletin_output_dir = dated_output_dir(
             request.output_dir,
@@ -363,6 +385,7 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowResult:
 
     map_result: MapResult | None = None
     if request.create_map:
+        report("Створюю гідрологічну карту Львівської області.")
         map_output_dir = dated_output_dir(
             request.output_dir,
             request.bulletin_date,
@@ -378,6 +401,10 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowResult:
 
     chart_results: tuple[ChartResult, ...] = ()
     if request.create_level_chart or request.create_discharge_chart:
+        selected_chart_count = int(request.create_level_chart) + int(
+            request.create_discharge_chart
+        )
+        report(f"Створюю архівні графіки: {selected_chart_count}.")
         chart_output_dir = dated_output_dir(
             request.output_dir,
             request.chart_end_date or request.bulletin_date,
@@ -393,6 +420,7 @@ def execute_workflow(request: WorkflowRequest) -> WorkflowResult:
             include_discharge=request.create_discharge_chart,
         )
 
+    report("Створення матеріалів завершено.")
     return WorkflowResult(
         tuple(hydro_results),
         meteo_result,

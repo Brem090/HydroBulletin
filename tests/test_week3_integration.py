@@ -188,6 +188,15 @@ class WeekThreeWorkflowTests(unittest.TestCase):
                         data_table.rows[zero_position].cells[3].text.strip(),
                         "0,0",
                     )
+                    special_position = next(
+                        position
+                        for position, item in enumerate(bulletin.rows, start=2)
+                        if item.station_index == "81261"
+                    )
+                    special_row = data_table.rows[special_position]
+                    self.assertEqual(special_row.cells[6].text.strip(), "433")
+                    self.assertEqual(special_row.cells[7].text.strip(), "254")
+                    self.assertEqual(special_row.cells[8].text.strip(), "прсх.")
 
             provenance = read_product_provenance(
                 db_path,

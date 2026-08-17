@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from matplotlib.backends.backend_agg import FigureCanvasAgg
+from matplotlib.figure import Figure
 from PIL import Image
 
 from hydrobulletin.archive import (
@@ -22,6 +23,8 @@ from hydrobulletin.archive import (
 from hydrobulletin.charts import (
     DISCHARGE_CHART,
     LEVEL_CHART,
+    _configure_axes,
+    _font_properties,
     _regular_series,
     chart_output_name,
     create_discharge_chart,
@@ -254,6 +257,31 @@ class VisualProductTests(unittest.TestCase):
             with Image.open(output_path) as image:
                 self.assertGreater(image.width, 1200)
                 self.assertGreater(image.height, 700)
+
+            figure = Figure(figsize=(11.5, 6.3), dpi=150)
+            axes = figure.subplots()
+            timestamps = (
+                datetime(2026, 7, 1, 8),
+                datetime(2026, 7, 1, 20),
+                datetime(2026, 7, 2, 8),
+                datetime(2026, 7, 2, 20),
+            )
+            _configure_axes(
+                figure,
+                axes,
+                title="Контрольний графік",
+                subtitle="1–2 липня 2026 року",
+                y_label="Рівень води, см",
+                start=datetime(2026, 7, 1),
+                end=datetime(2026, 7, 2),
+                timestamps=timestamps,
+                font=_font_properties(FONT_PATH),
+            )
+            FigureCanvasAgg(figure).draw()
+            labels = [label.get_text() for label in axes.get_xticklabels()]
+            self.assertEqual(len(labels), len(set(labels)))
+            self.assertTrue(any("08:00" in label for label in labels))
+            self.assertTrue(any("20:00" in label for label in labels))
 
     def test_chart_legend_is_outside_plot_area(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

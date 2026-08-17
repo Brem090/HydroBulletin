@@ -61,7 +61,7 @@ class RawArchiveTests(unittest.TestCase):
 
 
 class SchemaTests(unittest.TestCase):
-    def test_schema_v3(self) -> None:
+    def test_schema_v4(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             db_path = Path(tmp_dir) / "archive.sqlite"
             initialize_archive(db_path, LVIV_STATIONS)
@@ -77,12 +77,13 @@ class SchemaTests(unittest.TestCase):
             finally:
                 connection.close()
 
-            self.assertEqual(version, "3")
+            self.assertEqual(version, "4")
             self.assertTrue(
                 {
                     "observed_at",
                     "parameter_code",
                     "value",
+                    "text_value",
                     "quality_status",
                     "quality_message",
                     "source_file",

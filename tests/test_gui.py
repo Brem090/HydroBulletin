@@ -97,6 +97,41 @@ class GuiContractTests(unittest.TestCase):
         self.assertIn("Графік витрат води", source)
         self.assertNotIn("ручн", source.lower())
 
+    def test_week5_operational_tools_are_separate_from_product_selection(self) -> None:
+        source = inspect.getsource(
+            gui.HydroBulletinApp._build_operational_tools_section
+        )
+        self.assertIn("Панель рівнів", source)
+        self.assertIn("Екстремуми", source)
+        self.assertIn("open_levels_panel", source)
+        self.assertIn("open_extremes_manager", source)
+        self.assertNotIn("SQLite", source)
+        self.assertNotIn("self.make_button", source)
+        self.assertIn("SUBTLE_CARD", source)
+        self.assertIn('bg="#D1EAF4"', source)
+        self.assertIn("width=18", source)
+        layout_source = inspect.getsource(gui.HydroBulletinApp._build_ui)
+        visuals_position = layout_source.index("self._build_visuals_section()")
+        tools_position = layout_source.index("self._build_operational_tools_section()")
+        source_position = layout_source.index("self._build_source_section()")
+        self.assertLess(visuals_position, tools_position)
+        self.assertLess(tools_position, source_position)
+
+    def test_level_panel_uses_audited_corrections(self) -> None:
+        source = inspect.getsource(gui.HydroBulletinApp.open_levels_panel)
+        self.assertIn("create_correction", source)
+        self.assertIn("cancel_correction", source)
+        self.assertIn("початкове значення залишається незмінним", source)
+
+    def test_product_creation_has_unified_progress_states(self) -> None:
+        start_source = inspect.getsource(gui.HydroBulletinApp._start)
+        finish_source = inspect.getsource(gui.HydroBulletinApp._finish_success)
+        error_source = inspect.getsource(gui.HydroBulletinApp._finish_error)
+        self.assertIn("Створюю…", start_source)
+        self.assertIn('status_var.set("Створено.")', finish_source)
+        self.assertIn("Матеріали не створено", error_source)
+        self.assertIn("showinfo", finish_source)
+
     def test_message_types_are_selected_for_regions(self) -> None:
         self.assertEqual(
             gui.message_types_for_regions(("if", "left_dnister")),

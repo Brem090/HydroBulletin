@@ -311,6 +311,7 @@ def _configure_axes(
     y_label: str,
     start: datetime,
     end: datetime,
+    timestamps: Sequence[datetime],
     font: FontProperties,
 ) -> None:
     figure.suptitle(
@@ -345,14 +346,26 @@ def _configure_axes(
         axes.spines[side].set_linewidth(0.75)
 
     duration_days = (end - start).days + 1
-    locator = mdates.AutoDateLocator(
-        minticks=5,
-        maxticks=13,
-        interval_multiples=True,
-    )
-    date_format = "%d.%m" if start.year == end.year else "%d.%m.%Y"
-    axes.xaxis.set_major_locator(locator)
-    axes.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
+    short_period = duration_days <= 7
+    if short_period:
+        max_ticks = 10
+        step = max(1, (len(timestamps) + max_ticks - 1) // max_ticks)
+        tick_times = list(timestamps[::step])
+        if timestamps[-1] not in tick_times:
+            tick_times.append(timestamps[-1])
+        axes.set_xticks(tick_times)
+        has_multiple_hours = len({value.hour for value in timestamps}) > 1
+        date_format = "%d.%m\n%H:%M" if has_multiple_hours else "%d.%m"
+        axes.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
+    else:
+        locator = mdates.AutoDateLocator(
+            minticks=5,
+            maxticks=13,
+            interval_multiples=True,
+        )
+        date_format = "%d.%m" if start.year == end.year else "%d.%m.%Y"
+        axes.xaxis.set_major_locator(locator)
+        axes.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
     if duration_days <= 45:
         axes.xaxis.set_minor_locator(mdates.DayLocator(interval=1))
         axes.grid(
@@ -363,16 +376,25 @@ def _configure_axes(
             linewidth=0.4,
             alpha=0.9,
         )
-    if start == end:
-        axes.set_xlim(start - timedelta(hours=2), end + timedelta(days=1, hours=2))
+    axis_start = timestamps[0]
+    axis_end = timestamps[-1]
+    if axis_start == axis_end:
+        axes.set_xlim(
+            axis_start - timedelta(hours=12),
+            axis_end + timedelta(hours=12),
+        )
     else:
-        axes.set_xlim(start, end + timedelta(days=1))
+        padding = max(
+            timedelta(hours=1),
+            (axis_end - axis_start) / 25,
+        )
+        axes.set_xlim(axis_start - padding, axis_end + padding)
     axes.tick_params(axis="both", which="major", labelsize=8.5, colors="#30383C")
     axes.tick_params(axis="x", which="minor", length=0)
     _apply_font(axes, font)
     for label in axes.get_xticklabels():
-        label.set_rotation(90)
-        label.set_horizontalalignment("center")
+        label.set_rotation(0 if short_period else 45)
+        label.set_horizontalalignment("center" if short_period else "right")
     figure.subplots_adjust(left=0.095, right=0.975, bottom=0.19, top=0.84)
 
 
@@ -515,6 +537,7 @@ def create_level_chart(
         y_label="Рівень води, см над нулем поста",
         start=start,
         end=end,
+        timestamps=timestamps,
         font=font,
     )
     _deduplicated_legend(figure, axes, font)
@@ -601,6 +624,7 @@ def create_discharge_chart(
         y_label="Витрата води, м³/с",
         start=start,
         end=end,
+        timestamps=timestamps,
         font=font,
     )
     _deduplicated_legend(figure, axes, font)

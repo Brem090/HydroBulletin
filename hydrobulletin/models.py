@@ -33,6 +33,8 @@ class HydroObservation:
     water_temperature_c: float | None = None
     precipitation_mm: float | None = None
     discharge_m3_s: float | None = None
+    ice_phenomena: str = ""
+    ice_thickness_cm: float | None = None
     observed_at: datetime | None = None
     evening_observed_at: datetime | None = None
     source_type: str = "unknown"
@@ -97,6 +99,7 @@ class HydroMeasurement:
     observed_at: datetime
     parameter_code: str
     value: float | None
+    text_value: str
     unit: str
     quality_status: str
     source_type: str
@@ -131,6 +134,7 @@ def observation_measurements(
                 observed_at=observation.observed_at,
                 parameter_code="WATER_LEVEL",
                 value=None if observation.level is None else float(observation.level),
+                text_value="",
                 unit="cm",
                 **common,
             )
@@ -142,6 +146,7 @@ def observation_measurements(
                 observed_at=observation.observed_at,
                 parameter_code="DAILY_CHANGE",
                 value=float(observation.change),
+                text_value="",
                 unit="cm",
                 **common,
             )
@@ -156,6 +161,7 @@ def observation_measurements(
                 observed_at=observation.evening_observed_at,
                 parameter_code="WATER_LEVEL",
                 value=float(observation.evening_level),
+                text_value="",
                 unit="cm",
                 **common,
             )
@@ -174,7 +180,32 @@ def observation_measurements(
                 observed_at=observation.observed_at,
                 parameter_code=parameter_code,
                 value=float(value),
+                text_value="",
                 unit=unit,
+                **common,
+            )
+        )
+
+    if observation.ice_phenomena.strip():
+        measurements.append(
+            HydroMeasurement(
+                observed_at=observation.observed_at,
+                parameter_code="ICE_PHENOMENA",
+                value=None,
+                text_value=observation.ice_phenomena.strip(),
+                unit="code",
+                **common,
+            )
+        )
+
+    if observation.ice_thickness_cm is not None:
+        measurements.append(
+            HydroMeasurement(
+                observed_at=observation.observed_at,
+                parameter_code="ICE_THICKNESS",
+                value=float(observation.ice_thickness_cm),
+                text_value="",
+                unit="cm",
                 **common,
             )
         )

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-from hydrobulletin.archive import archive_summary, initialize_archive
+from hydrobulletin.archive import SCHEMA_VERSION, archive_summary, initialize_archive
 from hydrobulletin.batch import run_batch_import
 from hydrobulletin.models import HydroObservation
 from hydrobulletin.output_paths import MATERIALS_DIR_NAME
@@ -358,6 +358,8 @@ def print_workflow_result(result: WorkflowResult) -> None:
         "stations",
         "imports",
         "observations",
+        "corrections",
+        "reference_extremes",
         "products",
         "product_observations",
     ):
@@ -461,10 +463,10 @@ def main() -> int:
         print("HYDROBULLETIN — ІНІЦІАЛІЗАЦІЯ АРХІВУ")
         print(f"SQLite-база: {args.archive_db}")
         print(f"Постів і метеостанцій: {summary['stations']}")
-        print(f"Версія схеми: 3")
+        print(f"Версія схеми: {SCHEMA_VERSION}")
         return 0
 
-    print("HYDROBULLETIN — РОБОЧИЙ СЦЕНАРІЙ ТИЖНЯ 4")
+    print("HYDROBULLETIN — ФІНАЛІЗОВАНИЙ MVP, ТИЖДЕНЬ 5")
     print("=" * 58)
     print(f"Дата бюлетеня: {args.date}")
     print(f"Режим: {'batch' if args.batch_folder else args.source}")

@@ -199,6 +199,122 @@ def find_precipitation_group(groups: Iterable[str]) -> str | None:
     return fallback_group
 
 
+ICE_PHENOMENA = {
+    11: "Сало",
+    12: "Сніжура",
+    13: "Забереги",
+    14: "Припай",
+    15: "Забереги навислі",
+    16: "Льодохід",
+    17: "Льодохід з притоки",
+    18: "Льодохід поверх льодового покриву",
+    19: "Шугохід",
+    20: "Внутрішньоводний лід",
+    21: "П'ятри",
+    22: "Осівший лід",
+    23: "Навали льоду на березі",
+    24: "Льодяна перемичка у створі поста",
+    25: "Льодяна перемичка вище поста",
+    26: "Льодяна перемичка нижче поста",
+    30: "Затор льоду вище поста",
+    31: "Затор льоду нижче поста",
+    32: "Затор льоду штучно руйнується",
+    34: "Зажор льоду вище поста",
+    35: "Зажор льоду нижче поста",
+    36: "Зажор льоду штучно руйнується",
+    37: "Вода на льоду",
+    38: "Вода тече поверх льоду",
+    39: "Закраїни",
+    40: "Лід потемнів",
+    41: "Сніжниця",
+    42: "Лід підняло",
+    43: "Посування льоду",
+    44: "Розводдя",
+    45: "Лід тане на місці",
+    46: "Забереги залишкові",
+    47: "Наслуд",
+    48: "Битий лід",
+    49: "Млинчастий лід",
+    50: "Льодяні поля",
+    51: "Льодяна каша",
+    52: "Стамуха",
+    53: "Лід відносить від берега",
+    54: "Лід притиснуло до берега",
+    63: "Льодостав неповний",
+    64: "Льодостав з ополонками",
+    65: "Льодостав рівний",
+    66: "Льодостав з торосами",
+    67: "Льодостав з грядами торосів",
+    68: "Шугова доріжка",
+    69: "Під льодом шуга",
+    70: "Тріщини в льодоставі",
+    71: "Полій",
+    72: "Лід навислий",
+    73: "Лід ярусний",
+    74: "Лід на дні",
+    75: "Річка промерзла",
+    76: "Лід штучно зруйновано",
+    77: "Полійна вода",
+}
+
+ICE_INTENSITY_CODES = {
+    13,
+    16,
+    17,
+    18,
+    19,
+    39,
+    46,
+    48,
+    49,
+    50,
+    63,
+    64,
+    66,
+    67,
+    68,
+}
+
+
+def parse_ice_group(group: str) -> str | None:
+    """Декодує групу 5 КС-15 як явище або явище з інтенсивністю."""
+
+    normalized = normalize_token(group)
+    if not (
+        len(normalized) == 5
+        and normalized.startswith("5")
+        and normalized[1:].isdigit()
+    ):
+        return None
+
+    first_code = int(normalized[1:3])
+    second_code = int(normalized[3:5])
+    first_name = ICE_PHENOMENA.get(first_code)
+    if first_name is None:
+        return None
+
+    if first_code in ICE_INTENSITY_CODES and 1 <= second_code <= 10:
+        return f"{first_name} {second_code * 10}%"
+    if second_code == first_code:
+        return first_name
+
+    second_name = ICE_PHENOMENA.get(second_code)
+    return f"{first_name}, {second_name}" if second_name else first_name
+
+
+def parse_ice_thickness(group: str) -> int | None:
+    """Декодує товщину криги у сантиметрах із групи 7 КС-15."""
+
+    normalized = normalize_token(group)
+    if not (
+        len(normalized) == 5
+        and normalized.startswith("7")
+        and normalized[1:4].isdigit()
+    ):
+        return None
+    return int(normalized[1:4])
+
+
 def _primary_observation_groups(groups: Iterable[str]) -> list[str]:
     """Залишає основний строк спостереження до першої групи 9xxxx."""
 
@@ -281,6 +397,8 @@ def decode_station_record(
     evening_level: int | None = None
     temperature: float | None = None
     discharge: float | None = None
+    ice_items: list[str] = []
+    ice_thickness: int | None = None
 
     has_ice_context = any(
         len(group) == 5 and (group.startswith("5") or group.startswith("7"))
@@ -302,6 +420,12 @@ def decode_station_record(
             )
         elif discharge is None and group.startswith("8"):
             discharge = parse_discharge(group)
+        elif group.startswith("5"):
+            ice_text = parse_ice_group(group)
+            if ice_text:
+                ice_items.append(ice_text)
+        elif ice_thickness is None and group.startswith("7"):
+            ice_thickness = parse_ice_thickness(group)
 
     precip_group = find_precipitation_group(data_groups)
     precipitation = parse_precipitation(precip_group) if precip_group else None
@@ -318,6 +442,8 @@ def decode_station_record(
         water_temperature_c=temperature,
         precipitation_mm=precipitation,
         discharge_m3_s=discharge,
+        ice_phenomena=", ".join(ice_items),
+        ice_thickness_cm=ice_thickness,
         observed_at=observed_at,
         evening_observed_at=evening_observed_at,
         source_type=source_type,

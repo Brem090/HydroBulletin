@@ -22,6 +22,8 @@ GROUP_LABELS = {
     "test_week3_integration": "Пакетний сценарій і Word-бюлетені",
     "test_visual_products": "Карта, графіки та походження даних",
     "test_week4_integration": "Наскрізний сценарій тижня 4",
+    "test_week5_data": "Правки, екстремуми, лід і Панель рівнів",
+    "test_week5_integration": "Наскрізний сценарій тижня 5",
 }
 
 
