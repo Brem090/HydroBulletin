@@ -72,11 +72,13 @@ class ProductWorkflowTests(unittest.TestCase):
 
             self.assertEqual(len(result.bulletins), 3)
             self.assertIsNotNone(result.map_result)
+            map_result = result.map_result
+            assert map_result is not None
             self.assertEqual(len(result.charts), 2)
             self.assertEqual(archive_summary(db_path)["products"], 6)
 
             output_paths = [item.output_path for item in result.bulletins]
-            output_paths.append(result.map_result.output_path)
+            output_paths.append(map_result.output_path)
             output_paths.extend(item.output_path for item in result.charts)
             self.assertTrue(all(path.exists() for path in output_paths))
             expected_month_dir = output_dir / "2026" / "Липень"
@@ -84,7 +86,7 @@ class ProductWorkflowTests(unittest.TestCase):
                 all(path.parent == expected_month_dir for path in output_paths)
             )
 
-            with Image.open(result.map_result.output_path) as image:
+            with Image.open(map_result.output_path) as image:
                 self.assertEqual(image.size, (1920, 1080))
             for chart in result.charts:
                 with Image.open(chart.output_path) as image:
@@ -92,7 +94,7 @@ class ProductWorkflowTests(unittest.TestCase):
 
             map_provenance = read_product_provenance(
                 db_path,
-                result.map_result.product.product_id,
+                map_result.product.product_id,
             )
             chart_provenance = read_product_provenance(
                 db_path,

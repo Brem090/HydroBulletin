@@ -78,9 +78,12 @@ class CorrectionWorkflowTests(unittest.TestCase):
                 station_indexes=("81015",),
                 parameter_codes=("WATER_LEVEL",),
             )[0]
+            observation_id = level["observation_id"]
+            self.assertIsInstance(observation_id, int)
+            assert isinstance(observation_id, int)
             correction = create_correction(
                 db_path,
-                int(level["observation_id"]),
+                observation_id,
                 111,
                 reason="Перевірено за журналом",
                 hydrologist="Євген КОЗИРЄВ",
@@ -105,7 +108,7 @@ class CorrectionWorkflowTests(unittest.TestCase):
                 precipitation_mapping={},
             )
 
-            table = official_table(Document(output_path))
+            table = official_table(Document(str(output_path)))
             self.assertEqual(table.rows[2].cells[1].text.strip(), "111")
             self.assertEqual(table.rows[2].cells[6].text.strip(), "999")
             self.assertIn("Льодохід 50%", table.rows[2].cells[9].text)

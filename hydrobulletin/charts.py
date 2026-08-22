@@ -170,6 +170,10 @@ def _quality_marker(status: str) -> tuple[str, str] | None:
     return "#F39C12", "Потребує уваги (QC)"
 
 
+def _date_numbers(values: Iterable[datetime]) -> list[float]:
+    return [float(mdates.date2num(value)) for value in values]
+
+
 def _plot_quality_points(axes: Axes, rows: Iterable[DatabaseRow]) -> int:
     labels_used: set[str] = set()
     flagged = 0
@@ -182,7 +186,7 @@ def _plot_quality_points(axes: Axes, rows: Iterable[DatabaseRow]) -> int:
             continue
         color, label = marker
         axes.scatter(
-            [_row_time(row)],
+            _date_numbers((_row_time(row),)),
             [value],
             color=color,
             edgecolors="white",
@@ -219,9 +223,13 @@ def _plot_hydrograph_series(
     for previous, current in zip(available_indexes, available_indexes[1:]):
         if current - previous <= 1:
             continue
+        previous_value = values[previous]
+        current_value = values[current]
+        assert previous_value is not None
+        assert current_value is not None
         axes.plot(
-            (timestamps[previous], timestamps[current]),
-            (values[previous], values[current]),
+            _date_numbers((timestamps[previous], timestamps[current])),
+            [previous_value, current_value],
             color=GAP_COLOR,
             linewidth=0.9,
             linestyle=(0, (3, 3)),
@@ -243,8 +251,12 @@ def _plot_hydrograph_series(
             continue
 
         segment_end = index
-        segment_times = timestamps[segment_start:segment_end]
-        segment_values = values[segment_start:segment_end]
+        segment_times = _date_numbers(timestamps[segment_start:segment_end])
+        segment_values = [
+            item
+            for item in values[segment_start:segment_end]
+            if item is not None
+        ]
         marker = "o" if show_markers or len(segment_values) == 1 else None
         axes.plot(
             segment_times,
@@ -361,7 +373,7 @@ def _configure_axes(
         tick_times = list(timestamps[::step])
         if timestamps[-1] not in tick_times:
             tick_times.append(timestamps[-1])
-        axes.set_xticks(tick_times)
+        axes.set_xticks(_date_numbers(tick_times))
         has_multiple_hours = len({value.hour for value in timestamps}) > 1
         date_format = "%d.%m\n%H:%M" if has_multiple_hours else "%d.%m"
         axes.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
@@ -387,16 +399,19 @@ def _configure_axes(
     axis_start = timestamps[0]
     axis_end = timestamps[-1]
     if axis_start == axis_end:
-        axes.set_xlim(
-            axis_start - timedelta(hours=12),
-            axis_end + timedelta(hours=12),
-        )
+        left_limit = axis_start - timedelta(hours=12)
+        right_limit = axis_end + timedelta(hours=12)
     else:
         padding = max(
             timedelta(hours=1),
             (axis_end - axis_start) / 25,
         )
-        axes.set_xlim(axis_start - padding, axis_end + padding)
+        left_limit = axis_start - padding
+        right_limit = axis_end + padding
+    axes.set_xlim(
+        float(mdates.date2num(left_limit)),
+        float(mdates.date2num(right_limit)),
+    )
     axes.tick_params(axis="both", which="major", labelsize=8.5, colors="#30383C")
     axes.tick_params(axis="x", which="minor", length=0)
     _apply_font(axes, font)

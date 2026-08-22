@@ -120,17 +120,20 @@ class CorrectionAuditTests(unittest.TestCase):
                 end_date="12.07.2026",
                 parameter_codes=("WATER_LEVEL",),
             )[0]
+            observation_id = level["observation_id"]
+            self.assertIsInstance(observation_id, int)
+            assert isinstance(observation_id, int)
             with self.assertRaisesRegex(ValueError, "цілими сантиметрами"):
                 create_correction(
                     db_path,
-                    int(level["observation_id"]),
+                    observation_id,
                     108.5,
                     reason="Некоректна дробова правка",
                     hydrologist="Євген КОЗИРЄВ",
                 )
             correction = create_correction(
                 db_path,
-                int(level["observation_id"]),
+                observation_id,
                 109,
                 reason="Звірено з журналом поста",
                 hydrologist="Євген КОЗИРЄВ",
@@ -160,7 +163,7 @@ class CorrectionAuditTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "вже є активна правка"):
                 create_correction(
                     db_path,
-                    int(level["observation_id"]),
+                    observation_id,
                     110,
                     reason="Повтор",
                     hydrologist="Євген КОЗИРЄВ",
@@ -172,7 +175,7 @@ class CorrectionAuditTests(unittest.TestCase):
                 region_key="lviv",
                 bulletin_date="12.07.2026",
                 output_path="test.docx",
-                observation_ids=(int(level["observation_id"]),),
+                observation_ids=(observation_id,),
             )
             cancel_correction(
                 db_path,
@@ -190,7 +193,7 @@ class CorrectionAuditTests(unittest.TestCase):
             self.assertEqual(restored["value"], 105.0)
             history = read_corrections(
                 db_path,
-                observation_id=int(level["observation_id"]),
+                observation_id=observation_id,
             )
             self.assertEqual(len(history), 1)
             self.assertEqual(history[0]["is_active"], 0)
@@ -250,10 +253,12 @@ class ReferenceAndPanelTests(unittest.TestCase):
             self.assertEqual(panel.previous_evening_level, 103.0)
             self.assertEqual(panel.daily_change, 5.0)
             self.assertIsNotNone(panel.level_observation_id)
+            level_observation_id = panel.level_observation_id
+            assert level_observation_id is not None
 
             correction = create_correction(
                 db_path,
-                int(panel.level_observation_id),
+                level_observation_id,
                 108,
                 reason="Контрольна правка",
                 hydrologist="Євген КОЗИРЄВ",

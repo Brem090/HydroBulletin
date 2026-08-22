@@ -170,7 +170,10 @@ class DownloadTests(unittest.TestCase):
         self.assertTrue(opener.requests[0][0].full_url.endswith("/index.phtml"))
         self.assertTrue(opener.requests[1][0].full_url.endswith("/jornal/show.phtml"))
         self.assertEqual(opener.requests[1][0].method, "POST")
-        self.assertIn(b"FIND=%DA%D2%D5%D252%2A", opener.requests[1][0].data.upper())
+        request_data = opener.requests[1][0].data
+        self.assertIsInstance(request_data, bytes)
+        assert isinstance(request_data, bytes)
+        self.assertIn(b"FIND=%DA%D2%D5%D252%2A", request_data.upper())
 
     def test_http_error(self) -> None:
         opener = FakeOpener(FakeResponse(b"error", status=500))

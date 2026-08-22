@@ -9,10 +9,12 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import cast
 from unittest.mock import patch
 
 import main as main_module
 from hydrobulletin import gui
+from hydrobulletin.workflow import WorkflowResult
 
 
 class GuiContractTests(unittest.TestCase):
@@ -68,15 +70,18 @@ class GuiContractTests(unittest.TestCase):
         )
 
     def test_gcst_usage_summary_identifies_fallback(self) -> None:
-        result = SimpleNamespace(
-            hydro_imports=(
-                SimpleNamespace(
-                    source_name=(
-                        "ZRUR52@http://rgcst.meteo.gov.ua/armua"
-                    )
+        result = cast(
+            WorkflowResult,
+            SimpleNamespace(
+                hydro_imports=(
+                    SimpleNamespace(
+                        source_name=(
+                            "ZRUR52@http://rgcst.meteo.gov.ua/armua"
+                        )
+                    ),
                 ),
+                meteo_import=None,
             ),
-            meteo_import=None,
         )
         self.assertEqual(
             gui.gcst_usage_summary(result, "auto"),

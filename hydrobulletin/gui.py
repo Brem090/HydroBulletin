@@ -408,7 +408,7 @@ class HydroBulletinApp:
             disabledforeground="white",
             padx=14,
             pady=8,
-            width=width,
+            width=width if width is not None else 0,
             height=height,
         )
 
@@ -1954,14 +1954,13 @@ class HydroBulletinApp:
         ).start()
 
     def _worker(self, request: WorkflowRequest) -> None:
+        def report_progress(message: str) -> None:
+            self.root.after(0, self._write_log, message)
+
         try:
             result = execute_workflow(
                 request,
-                progress=lambda message: self.root.after(
-                    0,
-                    self._write_log,
-                    message,
-                ),
+                progress=report_progress,
             )
         except Exception as exc:
             self.root.after(0, self._finish_error, exc)

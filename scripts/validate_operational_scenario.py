@@ -659,7 +659,7 @@ def _product_files(output_root: Path) -> list[Path]:
 def _verify_product_files(paths: list[Path]) -> None:
     for path in paths:
         if path.suffix.lower() == ".docx":
-            document = Document(path)
+            document = Document(str(path))
             if not document.tables:
                 raise RuntimeError(f"Word-файл не містить таблиць: {path}")
         elif path.suffix.lower() == ".png":

@@ -205,7 +205,10 @@ class BulletinWorkflowTests(unittest.TestCase):
                         for run in paragraph.runs
                         if run.text.strip()
                     )
-                    self.assertEqual(precipitation_run.font.size.pt, 10.0)
+                    font_size = precipitation_run.font.size
+                    self.assertIsNotNone(font_size)
+                    assert font_size is not None
+                    self.assertEqual(font_size.pt, 10.0)
                     self.assertEqual(
                         [
                             mapped_row.cells[index].text.strip()

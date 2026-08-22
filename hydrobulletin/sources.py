@@ -321,7 +321,7 @@ def validate_downloaded_message(text: str, bulletin_date: str) -> None:
 
 
 class OpenerProtocol(Protocol):
-    def open(self, request: Request, timeout: float) -> Any:
+    def open(self, request: Request, /, *, timeout: float) -> Any:
         ...
 
 

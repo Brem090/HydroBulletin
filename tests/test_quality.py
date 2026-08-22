@@ -134,7 +134,10 @@ class QualityIntegrationTests(unittest.TestCase):
 
             self.assertEqual(summary.inconsistent_changes, 1)
             self.assertEqual(rows[0]["quality_status"], INCONSISTENT_CHANGE)
-            self.assertIn("різниця рівнів", rows[0]["quality_message"])
+            quality_message = rows[0]["quality_message"]
+            self.assertIsInstance(quality_message, str)
+            assert isinstance(quality_message, str)
+            self.assertIn("різниця рівнів", quality_message)
             self.assertEqual(archive_summary(db_path)["imports"], 2)
 
     def test_nil_level_remains_missing(self) -> None:
@@ -192,7 +195,10 @@ class QualityIntegrationTests(unittest.TestCase):
 
             self.assertEqual(summary.counts[NOT_CHECKED], 1)
             self.assertEqual(rows[0]["quality_status"], NOT_CHECKED)
-            self.assertIn("не звірено", rows[0]["quality_message"])
+            quality_message = rows[0]["quality_message"]
+            self.assertIsInstance(quality_message, str)
+            assert isinstance(quality_message, str)
+            self.assertIn("не звірено", quality_message)
 
 
 if __name__ == "__main__":
