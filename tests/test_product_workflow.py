@@ -1,4 +1,4 @@
-"""Наскрізна перевірка матеріалів четвертого тижня."""
+"""Наскрізна перевірка бюлетенів, карти та графіків."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ from hydrobulletin.workflow import WorkflowRequest, execute_workflow
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEMO_DIR = PROJECT_DIR / "demo_data" / "week3"
+DEMO_DIR = PROJECT_DIR / "demo_data" / "regression"
 
 
-class WeekFourWorkflowTests(unittest.TestCase):
+class ProductWorkflowTests(unittest.TestCase):
     def test_archive_to_bulletins_map_and_charts(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

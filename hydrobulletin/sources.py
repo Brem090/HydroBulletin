@@ -15,6 +15,7 @@ from urllib.parse import urlencode
 from urllib.request import (
     HTTPBasicAuthHandler,
     HTTPPasswordMgrWithDefaultRealm,
+    OpenerDirector,
     Request,
     build_opener,
 )
@@ -414,7 +415,7 @@ class OnlineDataSource:
     def source_type(self) -> str:
         return "online"
 
-    def _build_opener(self):
+    def _build_opener(self) -> OpenerDirector:
         password_manager = HTTPPasswordMgrWithDefaultRealm()
         password_manager.add_password(
             None,
@@ -597,7 +598,7 @@ class OnlineMeteoDataSource:
     def source_name(self) -> str:
         return f"SYNOP@{self.connection.base_url}"
 
-    def _build_opener(self):
+    def _build_opener(self) -> OpenerDirector:
         password_manager = HTTPPasswordMgrWithDefaultRealm()
         password_manager.add_password(
             None,

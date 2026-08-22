@@ -46,9 +46,16 @@ class GuiContractTests(unittest.TestCase):
             {
                 "Автоматично": "auto",
                 "Локальний TXT-файл": "local",
+                "Папка TXT-файлів": "batch",
                 "Архів SQLite": "database",
             },
         )
+
+    def test_gui_batch_mode_uses_a_folder_picker(self) -> None:
+        source = inspect.getsource(gui.HydroBulletinApp._build_source_section)
+        request_source = inspect.getsource(gui.HydroBulletinApp._request)
+        self.assertIn("Папка з ZRUR/SYNOP", source)
+        self.assertIn("batch_folder=batch_folder", request_source)
 
     def test_gui_has_primary_mirror_and_automatic_gcst_choices(self) -> None:
         self.assertEqual(
@@ -90,14 +97,14 @@ class GuiContractTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "вибрати гідрологічний пост"):
             gui.station_index_from_label("невідомий пост")
 
-    def test_week4_visual_products_are_available_without_manual_corrections(self) -> None:
+    def test_visual_products_are_available_without_manual_corrections(self) -> None:
         source = inspect.getsource(gui.HydroBulletinApp._build_visuals_section)
         self.assertIn("Гідрологічна карта Львівської області", source)
         self.assertIn("Графік ходу рівнів води", source)
         self.assertIn("Графік витрат води", source)
         self.assertNotIn("ручн", source.lower())
 
-    def test_week5_operational_tools_are_separate_from_product_selection(self) -> None:
+    def test_operational_tools_are_separate_from_product_selection(self) -> None:
         source = inspect.getsource(
             gui.HydroBulletinApp._build_operational_tools_section
         )
@@ -122,6 +129,12 @@ class GuiContractTests(unittest.TestCase):
         self.assertIn("create_correction", source)
         self.assertIn("cancel_correction", source)
         self.assertIn("початкове значення залишається незмінним", source)
+
+    def test_level_panel_displays_quality_statuses_in_ukrainian(self) -> None:
+        source = inspect.getsource(gui.HydroBulletinApp.open_levels_panel)
+        self.assertIn('"quality": "Статус якості"', source)
+        self.assertIn("quality_status_label(item.quality_status)", source)
+        self.assertNotIn("item.quality_status,", source)
 
     def test_product_creation_has_unified_progress_states(self) -> None:
         start_source = inspect.getsource(gui.HydroBulletinApp._start)
@@ -168,10 +181,10 @@ class GuiContractTests(unittest.TestCase):
         value = datetime(2026, 7, 30)
         self.assertEqual(gui.format_date_for_output(value), "30.07.2026")
 
-    def test_default_output_uses_calendar_folders_not_week_names(self) -> None:
+    def test_default_output_uses_calendar_folders(self) -> None:
         source = inspect.getsource(gui.HydroBulletinApp.__init__)
         self.assertIn("MATERIALS_DIR_NAME", source)
-        self.assertNotIn('"week4"', source)
+        self.assertNotIn("output/week", source)
 
     def test_keyboard_interrupt_closes_gui_without_traceback(self) -> None:
         stderr = io.StringIO()

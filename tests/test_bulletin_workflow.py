@@ -5,8 +5,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from typing import Any, Iterator
 
 from docx import Document
+from docx.document import Document as DocumentObject
+from docx.table import Table
 
 from hydrobulletin.archive import (
     archive_summary,
@@ -19,10 +22,10 @@ from hydrobulletin.workflow import WorkflowRequest, execute_workflow
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEMO_DIR = PROJECT_DIR / "demo_data" / "week3"
+DEMO_DIR = PROJECT_DIR / "demo_data" / "regression"
 
 
-def iter_tables(container):
+def iter_tables(container: Any) -> Iterator[Table]:
     for table in container.tables:
         yield table
         seen_cells: set[object] = set()
@@ -34,7 +37,7 @@ def iter_tables(container):
                 yield from iter_tables(cell)
 
 
-def official_data_table(document: Document):
+def official_data_table(document: DocumentObject) -> Table:
     return next(
         table
         for table in iter_tables(document)
@@ -51,6 +54,24 @@ class BatchDiscoveryTests(unittest.TestCase):
         self.assertEqual(files[0].bulletin_date, "11.07.2026")
         self.assertEqual(files[-1].message_type, "SYNOP")
 
+    def test_batch_import_can_be_limited_to_one_date(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            batch = run_batch_import(
+                DEMO_DIR,
+                raw_root=root / "raw",
+                db_path=root / "archive.sqlite",
+                all_stations=ALL_STATIONS,
+                hydro_stations_by_index=STATIONS_BY_INDEX,
+                meteo_stations_by_index={
+                    station.index: station for station in METEO_STATIONS
+                },
+                bulletin_date="12.07.2026",
+            )
+
+            self.assertEqual(batch.processed_files, 2)
+            self.assertEqual(batch.errors, ())
+
 
 class OfficialTemplateTests(unittest.TestCase):
     def test_templates_match_region_station_counts(self) -> None:
@@ -62,7 +83,32 @@ class OfficialTemplateTests(unittest.TestCase):
                 self.assertEqual(len(table.rows), len(region.stations) + 2)
 
 
-class WeekThreeWorkflowTests(unittest.TestCase):
+class BulletinWorkflowTests(unittest.TestCase):
+    def test_batch_folder_is_a_first_class_workflow_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            result = execute_workflow(
+                WorkflowRequest(
+                    bulletin_date="12.07.2026",
+                    source_mode="batch",
+                    message_types=("ZRUR52",),
+                    batch_folder=DEMO_DIR,
+                    db_path=root / "archive.sqlite",
+                    raw_root=root / "raw",
+                    templates_dir=PROJECT_DIR / "templates" / "bulletins",
+                    output_dir=root / "output",
+                    mapping_path=PROJECT_DIR
+                    / "config"
+                    / "precipitation_mapping.json",
+                    region_keys=("if",),
+                )
+            )
+
+            self.assertEqual(len(result.hydro_imports), 1)
+            self.assertIsNotNone(result.meteo_import)
+            self.assertEqual(len(result.bulletins), 1)
+            self.assertTrue(result.bulletins[0].output_path.exists())
+
     def test_full_demo_creates_three_traceable_bulletins(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

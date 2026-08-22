@@ -5,6 +5,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from types import TracebackType
+from urllib.request import Request
 
 from hydrobulletin.sources import (
     ArchiveDataSource,
@@ -36,16 +38,21 @@ class FakeResponse:
     def __enter__(self) -> FakeResponse:
         return self
 
-    def __exit__(self, exc_type, exc, traceback) -> None:
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
         return None
 
 
 class FakeOpener:
     def __init__(self, *responses: FakeResponse) -> None:
         self.responses = list(responses)
-        self.requests = []
+        self.requests: list[tuple[Request, float]] = []
 
-    def open(self, request, timeout: float):
+    def open(self, request: Request, timeout: float) -> FakeResponse:
         self.requests.append((request, timeout))
         return self.responses.pop(0)
 

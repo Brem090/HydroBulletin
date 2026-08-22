@@ -126,6 +126,13 @@ def parse_synop_records(raw_text: str) -> list[SynopRecord]:
 
 
 def decode_synop_precip_amount(rrr: int) -> float | None:
+    """Декодує поле ``RRR`` групи SYNOP ``6RRRtR`` у міліметри.
+
+    Код 990 (сліди опадів) зберігається як 0,0 мм у числовому полі; коди
+    991–999 відповідають 0,1–0,9 мм. Значення 989 є нижньою межею
+    «989 мм або більше», тому його числове представлення дорівнює 989,0.
+    """
+
     if rrr == 990:
         return 0.0
     if 991 <= rrr <= 999:
@@ -147,7 +154,7 @@ def synop_precip_period_hours(group: str) -> int | None:
 
 
 def synop_precip_groups(record: SynopRecord) -> list[tuple[float, int, str]]:
-    """Повертає лише групи 6RRRt із секції опадів."""
+    """Повертає лише групи ``6RRRtR`` із секції опадів."""
 
     result: list[tuple[float, int, str]] = []
     after_555 = False
@@ -172,12 +179,31 @@ def synop_precip_groups(record: SynopRecord) -> list[tuple[float, int, str]]:
     return result
 
 
+def synop_precipitation_indicator(record: SynopRecord) -> int | None:
+    """Повертає ``iR`` з групи ``iRiXhVV`` або ``None``.
+
+    ``iR = 3`` означає, що групу опадів пропущено через нульову кількість;
+    ``iR = 4`` — що кількість опадів недоступна. Сам індикатор не замінює
+    наявну групу ``6RRRtR``, а пояснює лише її відсутність.
+    """
+
+    if len(record.groups) < 2:
+        return None
+    indicator_group = normalize_token(record.groups[1])
+    if len(indicator_group) != 5 or not indicator_group.isdigit():
+        return None
+    indicator = int(indicator_group[0])
+    return indicator if 0 <= indicator <= 4 else None
+
+
 def _precip_amount(record: SynopRecord | None, period_hours: int) -> float | None:
     if record is None:
         return None
     for amount, period, _group in synop_precip_groups(record):
         if period == period_hours:
             return amount
+    if synop_precipitation_indicator(record) == 3:
+        return 0.0
     return None
 
 
@@ -205,29 +231,28 @@ def daily_precipitation(
     def half_day(
         end_local: datetime,
         middle_local: datetime,
-    ) -> tuple[float, bool]:
+    ) -> float | None:
         amount_12 = _precip_amount(at_local(end_local), 12)
         if amount_12 is not None:
-            return amount_12, True
+            return amount_12
 
-        total = 0.0
-        found = False
-        for local_dt in (middle_local, end_local):
-            amount_6 = _precip_amount(at_local(local_dt), 6)
-            if amount_6 is not None:
-                total += amount_6
-                found = True
-        return total, found
+        amounts_6 = tuple(
+            _precip_amount(at_local(local_dt), 6)
+            for local_dt in (middle_local, end_local)
+        )
+        if any(amount is None for amount in amounts_6):
+            return None
+        return sum(float(amount) for amount in amounts_6 if amount is not None)
 
-    first, first_found = half_day(
+    first = half_day(
         previous_day.replace(hour=21, minute=0, second=0, microsecond=0),
         previous_day.replace(hour=15, minute=0, second=0, microsecond=0),
     )
-    second, second_found = half_day(
+    second = half_day(
         bulletin.replace(hour=9, minute=0, second=0, microsecond=0),
         bulletin.replace(hour=3, minute=0, second=0, microsecond=0),
     )
-    if not first_found and not second_found:
+    if first is None or second is None:
         return None
     return round(first + second, 1)
 
@@ -358,4 +383,3 @@ def run_meteo_import_pipeline(
         resolved_name,
         quality,
     )
-

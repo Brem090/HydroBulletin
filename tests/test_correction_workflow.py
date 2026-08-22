@@ -7,6 +7,8 @@ import unittest
 from pathlib import Path
 
 from docx import Document
+from docx.document import Document as DocumentObject
+from docx.table import Table
 
 from hydrobulletin.archive import (
     create_correction,
@@ -28,7 +30,7 @@ PROJECT_DIR = Path(__file__).resolve().parents[1]
 TEMPLATES = PROJECT_DIR / "templates" / "bulletins"
 
 
-def official_table(document: Document):
+def official_table(document: DocumentObject) -> Table:
     queue = list(document.tables)
     seen: set[object] = set()
     while queue:
@@ -44,7 +46,7 @@ def official_table(document: Document):
     raise AssertionError("Офіційну таблицю не знайдено")
 
 
-class Week5IntegrationTests(unittest.TestCase):
+class CorrectionWorkflowTests(unittest.TestCase):
     def test_active_correction_and_reference_data_reach_word_and_provenance(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

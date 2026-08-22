@@ -7,7 +7,13 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterable
 
-from .archive import query_observations
+from .archive import (
+    DatabaseRow,
+    database_float,
+    database_int,
+    query_observations,
+    required_database_int,
+)
 from .models import Station
 from .quality import MISSING, worst_quality_status
 
@@ -34,10 +40,8 @@ def _parse_date(value: str) -> datetime:
         raise ValueError("Дата має бути у форматі ДД.ММ.РРРР.") from exc
 
 
-def _number(row: dict[str, object] | None) -> float | None:
-    if row is None or row["value"] is None:
-        return None
-    return float(row["value"])
+def _number(row: DatabaseRow | None) -> float | None:
+    return None if row is None else database_float(row["value"])
 
 
 def build_level_panel_rows(
@@ -59,7 +63,7 @@ def build_level_panel_rows(
         parameter_codes=("WATER_LEVEL", "DAILY_CHANGE"),
     )
 
-    indexed: dict[tuple[str, str, datetime], dict[str, object]] = {}
+    indexed: dict[tuple[str, str, datetime], DatabaseRow] = {}
     for record in records:
         key = (
             str(record["station_index"]),
@@ -99,14 +103,24 @@ def build_level_panel_rows(
                 _number(change),
                 quality_status,
                 " ".join(dict.fromkeys(messages)),
-                None if morning is None else int(morning["observation_id"]),
-                None if change is None else int(change["observation_id"]),
                 None
-                if morning is None or morning.get("correction_id") is None
-                else int(morning["correction_id"]),
+                if morning is None
+                else required_database_int(
+                    morning["observation_id"],
+                    "observation_id",
+                ),
                 None
-                if change is None or change.get("correction_id") is None
-                else int(change["correction_id"]),
+                if change is None
+                else required_database_int(
+                    change["observation_id"],
+                    "observation_id",
+                ),
+                None
+                if morning is None
+                else database_int(morning.get("correction_id")),
+                None
+                if change is None
+                else database_int(change.get("correction_id")),
             )
         )
     return tuple(result)

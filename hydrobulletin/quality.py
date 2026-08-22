@@ -15,6 +15,19 @@ SUSPICIOUS = "SUSPICIOUS"
 OUT_OF_RANGE = "OUT_OF_RANGE"
 INCONSISTENT_CHANGE = "INCONSISTENT_CHANGE"
 CORRECTED = "CORRECTED"
+NOT_CHECKED = "NOT_CHECKED"
+
+QUALITY_STATUS_LABELS: dict[str, str] = {
+    VALID: "Без зауважень",
+    "OK": "Без зауважень",
+    MISSING: "Дані відсутні",
+    SUSPICIOUS: "Підозріле значення",
+    OUT_OF_RANGE: "Поза діапазоном",
+    INCONSISTENT_CHANGE: "Неузгоджена зміна",
+    CORRECTED: "Виправлено",
+    NOT_CHECKED: "Не перевірено",
+    "INCOMPLETE": "Неповні дані",
+}
 
 QUALITY_STATUSES = (
     VALID,
@@ -22,10 +35,11 @@ QUALITY_STATUSES = (
     SUSPICIOUS,
     OUT_OF_RANGE,
     INCONSISTENT_CHANGE,
+    NOT_CHECKED,
 )
 
 QUALITY_PRIORITY = {
-    "NOT_CHECKED": 0,
+    NOT_CHECKED: 0,
     "OK": 0,
     VALID: 1,
     CORRECTED: 1.5,
@@ -63,6 +77,12 @@ class QualitySummary:
     checked: int
     inconsistent_changes: int
     counts: dict[str, int]
+
+
+def quality_status_label(status: str) -> str:
+    """Повертає український підпис внутрішнього статусу якості."""
+
+    return QUALITY_STATUS_LABELS.get(status, status)
 
 
 def _date_iso(date_text: str) -> str:
@@ -109,6 +129,113 @@ def evaluate_value(
     return VALID, ""
 
 
+def _base_quality(row: sqlite3.Row) -> tuple[str, str]:
+    if str(row["parameter_code"]) == "ICE_PHENOMENA":
+        if str(row["text_value"]).strip():
+            return VALID, ""
+        return MISSING, "Льодове явище не декодовано."
+    return evaluate_value(
+        str(row["parameter_code"]),
+        None if row["value"] is None else float(row["value"]),
+    )
+
+
+def _update_observation_quality(
+    connection: sqlite3.Connection,
+    observation_id: int,
+    status: str,
+    message: str,
+) -> None:
+    connection.execute(
+        """
+        UPDATE observations
+        SET quality_status = ?, quality_message = ?
+        WHERE observation_id = ?
+        """,
+        (status, message, observation_id),
+    )
+
+
+def _level_value(
+    connection: sqlite3.Connection,
+    station_index: str,
+    observed_at: datetime,
+) -> float | None:
+    row = connection.execute(
+        """
+        SELECT value
+        FROM observations
+        WHERE station_index = ? AND observed_at = ?
+          AND parameter_code = 'WATER_LEVEL'
+        """,
+        (station_index, observed_at.isoformat(timespec="seconds")),
+    ).fetchone()
+    if row is None or row[0] is None:
+        return None
+    return float(row[0])
+
+
+def _unavailable_level_message(
+    current_level: float | None,
+    previous_level: float | None,
+) -> str:
+    missing_parts: list[str] = []
+    if current_level is None:
+        missing_parts.append("поточний рівень")
+    if previous_level is None:
+        missing_parts.append("рівень попередньої доби")
+    if len(missing_parts) == 1:
+        return f"Добову зміну не звірено: відсутній {missing_parts[0]}."
+    return "Добову зміну не звірено: відсутні " + " і ".join(missing_parts) + "."
+
+
+def _check_daily_change(
+    connection: sqlite3.Connection,
+    row: sqlite3.Row,
+) -> bool:
+    """Перевіряє одну зміну; повертає ``True`` за неузгодженості."""
+
+    if row["value"] is None:
+        return False
+
+    actual = float(row["value"])
+    base_status, _base_message = evaluate_value("DAILY_CHANGE", actual)
+    current_at = datetime.fromisoformat(str(row["observed_at"]))
+    previous_at = current_at - timedelta(days=1)
+    station_index = str(row["station_index"])
+    current_level = _level_value(connection, station_index, current_at)
+    previous_level = _level_value(connection, station_index, previous_at)
+
+    if current_level is None or previous_level is None:
+        # Відсутність бази для міждобового зіставлення не робить саме
+        # значення підозрілим. Статус фіксує, що це правило не виконано.
+        if base_status == VALID:
+            _update_observation_quality(
+                connection,
+                int(row["observation_id"]),
+                NOT_CHECKED,
+                _unavailable_level_message(current_level, previous_level),
+            )
+        return False
+
+    expected = current_level - previous_level
+    if abs(expected - actual) <= 1e-9:
+        return False
+    if base_status in {MISSING, OUT_OF_RANGE}:
+        return False
+
+    _update_observation_quality(
+        connection,
+        int(row["observation_id"]),
+        INCONSISTENT_CHANGE,
+        (
+            f"Добова зміна у коді {actual:g} см, але різниця рівнів "
+            f"становить {expected:g} см."
+        ),
+    )
+    return True
+
+
 def run_initial_quality_control(
     db_path: Path,
     bulletin_date: str,
@@ -122,7 +249,6 @@ def run_initial_quality_control(
     target_date = _date_iso(bulletin_date)
     connection = sqlite3.connect(Path(db_path))
     connection.row_factory = sqlite3.Row
-    inconsistent = 0
 
     try:
         rows = connection.execute(
@@ -137,130 +263,19 @@ def run_initial_quality_control(
         ).fetchall()
 
         for row in rows:
-            if str(row["parameter_code"]) == "ICE_PHENOMENA":
-                status, message = (
-                    (VALID, "")
-                    if str(row["text_value"]).strip()
-                    else (MISSING, "Льодове явище не декодовано.")
-                )
-            else:
-                status, message = evaluate_value(
-                    str(row["parameter_code"]),
-                    None if row["value"] is None else float(row["value"]),
-                )
-            connection.execute(
-                """
-                UPDATE observations
-                SET quality_status = ?, quality_message = ?
-                WHERE observation_id = ?
-                """,
-                (status, message, row["observation_id"]),
+            status, message = _base_quality(row)
+            _update_observation_quality(
+                connection,
+                int(row["observation_id"]),
+                status,
+                message,
             )
 
-        change_rows = [row for row in rows if row["parameter_code"] == "DAILY_CHANGE"]
-        for change_row in change_rows:
-            if change_row["value"] is None:
-                continue
-            current_at = datetime.fromisoformat(str(change_row["observed_at"]))
-            previous_at = current_at - timedelta(days=1)
-
-            current_level = connection.execute(
-                """
-                SELECT value
-                FROM observations
-                WHERE station_index = ? AND observed_at = ?
-                  AND parameter_code = 'WATER_LEVEL'
-                """,
-                (
-                    change_row["station_index"],
-                    current_at.isoformat(timespec="seconds"),
-                ),
-            ).fetchone()
-            previous_level = connection.execute(
-                """
-                SELECT value
-                FROM observations
-                WHERE station_index = ? AND observed_at = ?
-                  AND parameter_code = 'WATER_LEVEL'
-                """,
-                (
-                    change_row["station_index"],
-                    previous_at.isoformat(timespec="seconds"),
-                ),
-            ).fetchone()
-
-            if (
-                current_level is None
-                or previous_level is None
-                or current_level[0] is None
-                or previous_level[0] is None
-            ):
-                missing_parts: list[str] = []
-                if current_level is None or current_level[0] is None:
-                    missing_parts.append("поточний рівень")
-                if previous_level is None or previous_level[0] is None:
-                    missing_parts.append("рівень попередньої доби")
-                current_status = connection.execute(
-                    """
-                    SELECT quality_status
-                    FROM observations
-                    WHERE observation_id = ?
-                    """,
-                    (change_row["observation_id"],),
-                ).fetchone()
-                if current_status and current_status[0] not in {
-                    MISSING,
-                    OUT_OF_RANGE,
-                }:
-                    connection.execute(
-                        """
-                        UPDATE observations
-                        SET quality_status = ?, quality_message = ?
-                        WHERE observation_id = ?
-                        """,
-                        (
-                            SUSPICIOUS,
-                            "Добову зміну не вдалося звірити: відсутній "
-                            + " та ".join(missing_parts)
-                            + ".",
-                            change_row["observation_id"],
-                        ),
-                    )
-                continue
-
-            expected = float(current_level[0]) - float(previous_level[0])
-            actual = float(change_row["value"])
-            if abs(expected - actual) <= 1e-9:
-                continue
-
-            current_status = connection.execute(
-                """
-                SELECT quality_status
-                FROM observations
-                WHERE observation_id = ?
-                """,
-                (change_row["observation_id"],),
-            ).fetchone()
-            if current_status and current_status[0] in {MISSING, OUT_OF_RANGE}:
-                continue
-
-            message = (
-                f"Добова зміна у коді {actual:g} см, але різниця рівнів "
-                f"становить {expected:g} см."
-            )
-            connection.execute(
-                """
-                UPDATE observations
-                SET quality_status = ?, quality_message = ?
-                WHERE observation_id = ?
-                """,
-                (
-                    INCONSISTENT_CHANGE,
-                    message,
-                    change_row["observation_id"],
-                ),
-            )
-            inconsistent += 1
+        inconsistent = sum(
+            _check_daily_change(connection, row)
+            for row in rows
+            if row["parameter_code"] == "DAILY_CHANGE"
+        )
 
         connection.commit()
         status_rows = connection.execute(
@@ -284,7 +299,7 @@ def run_initial_quality_control(
 def worst_quality_status(statuses: list[str] | tuple[str, ...]) -> str:
     """Повертає найсерйозніший прапорець для рядка бюлетеня."""
 
-    normalized = [status or "NOT_CHECKED" for status in statuses]
+    normalized = [status or NOT_CHECKED for status in statuses]
     if not normalized:
         return MISSING
     return max(normalized, key=lambda item: QUALITY_PRIORITY.get(item, 0))

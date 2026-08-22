@@ -56,6 +56,22 @@ REGIONS_BY_KEY: dict[str, RegionConfig] = {
 }
 
 
+def message_types_for_regions(
+    region_keys: list[str] | tuple[str, ...],
+) -> tuple[str, ...]:
+    """Повертає мінімальний набір ZRUR для вибраних матеріалів.
+
+    Пости Івано-Франківської області та лівих приток Дністра надходять у
+    ZRUR52. Для повного покриття Львівської області додатково потрібен ZRUR71.
+    """
+
+    selected = set(region_keys)
+    message_types = ["ZRUR52"]
+    if "lviv" in selected:
+        message_types.append("ZRUR71")
+    return tuple(message_types)
+
+
 def resolve_regions(keys: list[str] | tuple[str, ...]) -> tuple[RegionConfig, ...]:
     """Повертає конфігурації у стабільному порядку й перевіряє ключі."""
 
@@ -64,4 +80,3 @@ def resolve_regions(keys: list[str] | tuple[str, ...]) -> tuple[RegionConfig, ..
         raise ValueError(f"Невідомі регіони: {', '.join(unknown)}")
     selected = set(keys)
     return tuple(region for region in REGIONS if region.key in selected)
-

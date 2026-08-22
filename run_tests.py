@@ -19,11 +19,13 @@ GROUP_LABELS = {
     "test_sources": "Джерела даних та онлайн-завантаження",
     "test_gui": "Інтерфейс і масштабування",
     "test_output_paths": "Календарна структура матеріалів",
-    "test_week3_integration": "Пакетний сценарій і Word-бюлетені",
+    "test_operational_validation": "Повний експлуатаційний сценарій",
+    "test_runtime": "Windows-шляхи та запускні файли",
+    "test_bulletin_workflow": "Пакетний імпорт і Word-бюлетені",
     "test_visual_products": "Карта, графіки та походження даних",
-    "test_week4_integration": "Наскрізний сценарій тижня 4",
-    "test_week5_data": "Правки, екстремуми, лід і Панель рівнів",
-    "test_week5_integration": "Наскрізний сценарій тижня 5",
+    "test_product_workflow": "Бюлетені, карта й графіки наскрізно",
+    "test_operational_tools": "Правки, екстремуми, лід і Панель рівнів",
+    "test_correction_workflow": "Правка, Word і provenance наскрізно",
 }
 
 

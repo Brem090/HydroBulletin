@@ -1,0 +1,24 @@
+{
+  "include": [
+    "main.py",
+    "launcher.py",
+    "hydrobulletin",
+    "scripts",
+    "tests"
+  ],
+  "exclude": [
+    "**/__pycache__",
+    ".venv",
+    "venv",
+    "archive",
+    "artifacts",
+    "build",
+    "dist",
+    "output",
+    "work",
+    "Готові матеріали"
+  ],
+  "pythonVersion": "3.10",
+  "pythonPlatform": "Windows",
+  "typeCheckingMode": "standard"
+}

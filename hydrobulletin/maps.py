@@ -11,7 +11,14 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from .archive import ProductResult, query_observations, register_product
+from .archive import (
+    DatabaseRow,
+    DatabaseValue,
+    ProductResult,
+    query_observations,
+    register_product,
+    required_database_int,
+)
 
 
 MAP_PARAMETERS = (
@@ -199,14 +206,14 @@ def _font(font_path: Path, size: float, scale: int) -> ImageFont.FreeTypeFont:
         raise RuntimeError(f"Не вдалося відкрити шрифт карти: {font_path}") from exc
 
 
-def _format_change(value: object) -> str:
+def _format_change(value: DatabaseValue) -> str:
     if value is None:
         return ""
     number = int(round(float(value)))
     return f"+{number}" if number > 0 else str(number)
 
 
-def _change_color(value: object) -> tuple[int, int, int, int]:
+def _change_color(value: DatabaseValue) -> tuple[int, int, int, int]:
     if value is None:
         return (10, 10, 10, 255)
     number = float(value)
@@ -217,7 +224,7 @@ def _change_color(value: object) -> tuple[int, int, int, int]:
     return (10, 10, 10, 255)
 
 
-def _format_temperature(value: object) -> str:
+def _format_temperature(value: DatabaseValue) -> str:
     if value is None:
         return ""
     number = float(value)
@@ -251,7 +258,10 @@ def _is_map_pixel(base: Image.Image, x: float, y: float) -> bool:
     pixel_y = round(y)
     if not (0 <= pixel_x < width and 0 <= pixel_y < height):
         return False
-    red, green, blue, *_ = base.getpixel((pixel_x, pixel_y))
+    pixel = base.getpixel((pixel_x, pixel_y))
+    if not isinstance(pixel, tuple) or len(pixel) < 3:
+        return False
+    red, green, blue = pixel[:3]
     return not (red < 90 and green < 115 and blue < 150)
 
 
@@ -308,7 +318,7 @@ def _draw_temperature(
     base: Image.Image,
     position: tuple[float, float],
     level_position: tuple[float, float],
-    value: object,
+    value: DatabaseValue,
     font: ImageFont.FreeTypeFont,
     scale: int,
 ) -> None:
@@ -346,8 +356,8 @@ def _draw_temperature(
 def _draw_value_block(
     draw: ImageDraw.ImageDraw,
     positions: dict[str, tuple[float, float]],
-    level: object,
-    change: object,
+    level: DatabaseValue,
+    change: DatabaseValue,
     font: ImageFont.FreeTypeFont,
     scale: int,
 ) -> None:
@@ -406,15 +416,15 @@ def _draw_title(
         )
 
 
-def _is_morning_observation(row: dict[str, object]) -> bool:
+def _is_morning_observation(row: DatabaseRow) -> bool:
     observed_at = datetime.fromisoformat(str(row["observed_at"]))
     return observed_at.hour == 8 and observed_at.minute == 0
 
 
 def _morning_values(
-    rows: list[dict[str, object]],
-) -> dict[str, dict[str, object]]:
-    result: dict[str, dict[str, object]] = {}
+    rows: list[DatabaseRow],
+) -> dict[str, dict[str, DatabaseValue]]:
+    result: dict[str, dict[str, DatabaseValue]] = {}
     for row in rows:
         if not _is_morning_observation(row):
             continue
@@ -520,7 +530,10 @@ def create_lviv_map(
         region_key="lviv",
         bulletin_date=bulletin_date,
         output_path=str(output_path),
-        observation_ids=(int(row["observation_id"]) for row in morning_rows),
+        observation_ids=(
+            required_database_int(row["observation_id"], "observation_id")
+            for row in morning_rows
+        ),
         metadata={
             "template": str(template_path),
             "parameters": list(MAP_PARAMETERS),

@@ -10,11 +10,41 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping, Sequence, TypeAlias
 
 from .models import HydroObservation, Station, observation_measurements
 
 SCHEMA_VERSION = "4"
+
+# Значення, які SQLite приймає як параметри й повертає в рядках запиту.
+# Окремий тип не дає статичному аналізатору втрачати інформацію до ``object``.
+DatabaseValue: TypeAlias = str | int | float | bytes | None
+DatabaseRow: TypeAlias = dict[str, DatabaseValue]
+
+
+def database_float(value: DatabaseValue) -> float | None:
+    """Безпечно перетворює необов'язкове значення SQLite на ``float``."""
+
+    if value is None:
+        return None
+    return float(value)
+
+
+def database_int(value: DatabaseValue) -> int | None:
+    """Безпечно перетворює необов'язкове значення SQLite на ``int``."""
+
+    if value is None:
+        return None
+    return int(value)
+
+
+def required_database_int(value: DatabaseValue, field_name: str) -> int:
+    """Повертає обов'язковий цілий і явно відхиляє пошкоджений рядок."""
+
+    converted = database_int(value)
+    if converted is None:
+        raise ValueError(f"У рядку SQLite відсутнє обов'язкове поле {field_name}.")
+    return converted
 
 BASE_SCHEMA_SQL = """
 PRAGMA foreign_keys = ON;
@@ -294,14 +324,14 @@ def _ensure_observations_schema(connection: sqlite3.Connection) -> None:
         connection.executescript(OBSERVATIONS_SCHEMA_SQL)
         return
 
-    connection.execute("ALTER TABLE observations RENAME TO observations_week1")
+    connection.execute("ALTER TABLE observations RENAME TO observations_legacy")
     connection.executescript(OBSERVATIONS_SCHEMA_SQL)
 
     previous_rows = connection.execute(
         """
         SELECT station_index, observation_at, level_cm, daily_change_cm,
                quality_status, import_id
-        FROM observations_week1
+        FROM observations_legacy
         """
     ).fetchall()
     for (
@@ -338,7 +368,7 @@ def _ensure_observations_schema(connection: sqlite3.Connection) -> None:
                 ),
             )
 
-    connection.execute("DROP TABLE observations_week1")
+    connection.execute("DROP TABLE observations_legacy")
 
 
 def _ensure_product_observation_columns(
@@ -617,7 +647,7 @@ def archive_summary(db_path: Path) -> dict[str, int]:
     return result
 
 
-def read_observations(db_path: Path) -> list[dict[str, object]]:
+def read_observations(db_path: Path) -> list[DatabaseRow]:
     """Повертає нормалізовані записи для тестів і консольного демо."""
 
     connection = sqlite3.connect(Path(db_path))
@@ -662,11 +692,11 @@ def query_observations(
     end_date: str | None = None,
     station_indexes: Sequence[str] = (),
     parameter_codes: Sequence[str] = (),
-) -> list[dict[str, object]]:
+) -> list[DatabaseRow]:
     """Читає архівну вибірку за постом, датою, періодом і параметром."""
 
     clauses: list[str] = []
-    values: list[object] = []
+    values: list[DatabaseValue] = []
 
     if start_date:
         clauses.append("date(o.observed_at) >= date(?)")
@@ -880,11 +910,11 @@ def read_corrections(
     *,
     observation_id: int | None = None,
     active_only: bool = False,
-) -> list[dict[str, object]]:
+) -> list[DatabaseRow]:
     """Повертає історію правок для аудиту або Панелі рівнів."""
 
     clauses: list[str] = []
-    values: list[object] = []
+    values: list[DatabaseValue] = []
     if observation_id is not None:
         clauses.append("c.observation_id = ?")
         values.append(int(observation_id))
@@ -1031,10 +1061,10 @@ def upsert_reference_extreme(
 def read_reference_extremes(
     db_path: Path,
     station_indexes: Sequence[str] = (),
-) -> dict[str, dict[str, object]]:
+) -> dict[str, DatabaseRow]:
     """Читає довідник екстремумів, за потреби лише для вибраних постів."""
 
-    values: list[object] = []
+    values: list[DatabaseValue] = []
     where_sql = ""
     if station_indexes:
         placeholders = ", ".join("?" for _ in station_indexes)
@@ -1173,7 +1203,7 @@ def register_product(
 def read_product_provenance(
     db_path: Path,
     product_id: int,
-) -> list[dict[str, object]]:
+) -> list[DatabaseRow]:
     """Повертає повний ланцюг походження значень одного продукту."""
 
     connection = sqlite3.connect(Path(db_path))

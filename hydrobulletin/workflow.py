@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Callable, Sequence
 
 from .archive import archive_summary, initialize_archive
+from .batch import run_batch_import
 from .bulletins import BulletinResult, generate_bulletins
 from .charts import ChartResult, create_charts
 from .extremes import seed_extremes_from_templates
@@ -41,7 +42,7 @@ from .stations import (
 )
 
 
-SOURCE_MODES = ("auto", "local", "online", "archive", "database")
+SOURCE_MODES = ("auto", "local", "online", "archive", "batch", "database")
 DEFAULT_HYDROLOGIST = "Євген КОЗИРЄВ"
 
 
@@ -61,6 +62,8 @@ class WorkflowRequest:
     hydrologist: str = DEFAULT_HYDROLOGIST
     local_file: Path | None = None
     meteo_file: Path | None = None
+    batch_folder: Path | None = None
+    batch_all_dates: bool = False
     env_path: Path | None = None
     gcst_source_mode: str = GCST_SOURCE_AUTO
     include_meteo: bool = True
@@ -107,6 +110,8 @@ def _validate_request(request: WorkflowRequest) -> None:
         )
     if request.source_mode != "database" and not request.message_types:
         raise ValueError("Потрібно вибрати хоча б один тип гідроповідомлення.")
+    if request.source_mode == "batch" and request.batch_folder is None:
+        raise ValueError("Для пакетного режиму потрібно вибрати папку TXT-файлів.")
     if request.create_bulletins and not request.region_keys:
         raise ValueError("Потрібно вибрати хоча б один регіон бюлетеня.")
 
@@ -270,6 +275,141 @@ def _meteo_source(
     return FallbackDataSource(tuple(sources))
 
 
+def _import_hydro_messages(
+    request: WorkflowRequest,
+    connections: tuple[OnlineConnection, ...],
+    report: Callable[[str], None],
+) -> tuple[list[PipelineResult], tuple[OnlineConnection, ...]]:
+    """Імпортує вибрані ZRUR і повертає фактичний порядок підключень."""
+
+    message_types = tuple(
+        dict.fromkeys(item.upper() for item in request.message_types)
+    )
+    if request.source_mode == "local":
+        message_types = message_types[:1]
+    if request.source_mode == "database":
+        message_types = ()
+
+    results: list[PipelineResult] = []
+    active_connections = connections
+    for message_type in message_types:
+        report(f"Отримую та імпортую {message_type}.")
+        source = _hydro_source(request, message_type, active_connections)
+        result = run_import_pipeline(
+            source,
+            bulletin_date=request.bulletin_date,
+            message_type=message_type,
+            raw_root=request.raw_root,
+            db_path=request.db_path,
+            stations=ALL_STATIONS,
+            stations_by_index=STATIONS_BY_INDEX,
+            source_type=request.source_mode,
+            source_name=getattr(source, "source_name", request.source_mode),
+        )
+        results.append(result)
+
+        if (
+            request.gcst_source_mode == GCST_SOURCE_AUTO
+            and len(active_connections) > 1
+            and active_connections[-1].base_url in result.source_name
+        ):
+            active_connections = (active_connections[-1],)
+
+    return results, active_connections
+
+
+def _import_meteo(
+    request: WorkflowRequest,
+    connections: tuple[OnlineConnection, ...],
+    warnings: list[str],
+    report: Callable[[str], None],
+) -> MeteoPipelineResult | None:
+    """Імпортує SYNOP, залишаючи його відсутність явним зауваженням."""
+
+    source = _meteo_source(request, connections)
+    if source is None:
+        if request.include_meteo and request.source_mode == "local":
+            warnings.append(
+                "SYNOP-файл не вибрано: у бюлетені буде використано "
+                "гідрологічні опади або позначку про відсутність даних."
+            )
+        return None
+
+    report("Отримую та імпортую SYNOP-опади.")
+    try:
+        return run_meteo_import_pipeline(
+            source,
+            bulletin_date=request.bulletin_date,
+            raw_root=request.raw_root,
+            db_path=request.db_path,
+            all_stations=ALL_STATIONS,
+            meteo_stations_by_index={
+                station.index: station for station in METEO_STATIONS
+            },
+            source_type=request.source_mode,
+            source_name=getattr(source, "source_name", request.source_mode),
+        )
+    except (DataSourceError, FileNotFoundError, OSError, ValueError) as exc:
+        warnings.append(f"SYNOP-опади не імпортовано: {exc}")
+        return None
+
+
+def _import_batch_folder(
+    request: WorkflowRequest,
+    warnings: list[str],
+    report: Callable[[str], None],
+) -> tuple[list[PipelineResult], MeteoPipelineResult | None]:
+    """Імпортує вибрану дату або весь датований пакет і перевіряє ZRUR."""
+
+    if request.batch_folder is None:
+        raise ValueError("Для пакетного режиму потрібно вибрати папку TXT-файлів.")
+
+    if request.batch_all_dates:
+        report("Імпортую всі датовані TXT-файли з вибраної папки.")
+    else:
+        report(f"Імпортую TXT-файли за {request.bulletin_date} з вибраної папки.")
+    batch = run_batch_import(
+        request.batch_folder,
+        raw_root=request.raw_root,
+        db_path=request.db_path,
+        all_stations=ALL_STATIONS,
+        hydro_stations_by_index=STATIONS_BY_INDEX,
+        meteo_stations_by_index={
+            station.index: station for station in METEO_STATIONS
+        },
+        bulletin_date=None if request.batch_all_dates else request.bulletin_date,
+        include_meteo=request.include_meteo,
+    )
+    warnings.extend(f"{item.path}: {item.message}" for item in batch.errors)
+
+    imported_types = {item.message_type for item in batch.hydrological}
+    required_types = (
+        set(request.message_types)
+        if request.create_bulletins or request.create_map
+        else set()
+    )
+    missing_types = sorted(required_types - imported_types)
+    if required_types and not imported_types:
+        raise FileNotFoundError(
+            "У вибраній папці за вказану дату не знайдено жодного "
+            "гідрологічного TXT-файла."
+        )
+    if missing_types:
+        warnings.append(
+            "За вибрану дату не знайдено "
+            + ", ".join(missing_types)
+            + ": відповідні рядки матеріалів можуть не мати даних."
+        )
+
+    meteo_result = batch.meteorological[-1] if batch.meteorological else None
+    if request.include_meteo and meteo_result is None:
+        warnings.append(
+            "SYNOP-файл за вибрану дату не знайдено: у бюлетені буде "
+            "використано гідрологічні опади або позначку про відсутність даних."
+        )
+    return list(batch.hydrological), meteo_result
+
+
 def execute_workflow(
     request: WorkflowRequest,
     progress: Callable[[str], None] | None = None,
@@ -299,65 +439,23 @@ def execute_workflow(
         report("Перевіряю налаштування основного сервера та дзеркала ГЦСТ.")
         connections = _load_online_connections(request, warnings)
 
-    message_types = tuple(
-        dict.fromkeys(item.upper() for item in request.message_types)
-    )
-    if request.source_mode == "local":
-        message_types = message_types[:1]
-    if request.source_mode == "database":
-        message_types = ()
-
-    hydro_results: list[PipelineResult] = []
-    for message_type in message_types:
-        report(f"Отримую та імпортую {message_type}.")
-        source = _hydro_source(request, message_type, connections)
-        result = run_import_pipeline(
-            source,
-            bulletin_date=request.bulletin_date,
-            message_type=message_type,
-            raw_root=request.raw_root,
-            db_path=request.db_path,
-            stations=ALL_STATIONS,
-            stations_by_index=STATIONS_BY_INDEX,
-            source_type=request.source_mode,
-            source_name=getattr(source, "source_name", request.source_mode),
+    if request.source_mode == "batch":
+        hydro_results, meteo_result = _import_batch_folder(
+            request,
+            warnings,
+            report,
         )
-        hydro_results.append(result)
-
-        if (
-            request.gcst_source_mode == GCST_SOURCE_AUTO
-            and len(connections) > 1
-            and connections[-1].base_url in result.source_name
-        ):
-            connections = (connections[-1],)
-
-    meteo_result: MeteoPipelineResult | None = None
-    meteo_source = _meteo_source(request, connections)
-    if meteo_source is not None:
-        report("Отримую та імпортую SYNOP-опади.")
-        try:
-            meteo_result = run_meteo_import_pipeline(
-                meteo_source,
-                bulletin_date=request.bulletin_date,
-                raw_root=request.raw_root,
-                db_path=request.db_path,
-                all_stations=ALL_STATIONS,
-                meteo_stations_by_index={
-                    station.index: station for station in METEO_STATIONS
-                },
-                source_type=request.source_mode,
-                source_name=getattr(
-                    meteo_source,
-                    "source_name",
-                    request.source_mode,
-                ),
-            )
-        except (DataSourceError, FileNotFoundError, OSError, ValueError) as exc:
-            warnings.append(f"SYNOP-опади не імпортовано: {exc}")
-    elif request.include_meteo and request.source_mode == "local":
-        warnings.append(
-            "SYNOP-файл не вибрано: у бюлетені буде використано "
-            "гідрологічні опади або позначку про відсутність даних."
+    else:
+        hydro_results, connections = _import_hydro_messages(
+            request,
+            connections,
+            report,
+        )
+        meteo_result = _import_meteo(
+            request,
+            connections,
+            warnings,
+            report,
         )
 
     report("Виконую первинний контроль якості.")
@@ -386,6 +484,12 @@ def execute_workflow(
     map_result: MapResult | None = None
     if request.create_map:
         report("Створюю гідрологічну карту Львівської області.")
+        map_template_path = request.map_template_path
+        font_path = request.font_path
+        if map_template_path is None or font_path is None:
+            raise RuntimeError(
+                "Для карти мають бути задані шаблон і файл шрифту."
+            )
         map_output_dir = dated_output_dir(
             request.output_dir,
             request.bulletin_date,
@@ -393,8 +497,8 @@ def execute_workflow(
         map_result = create_lviv_map(
             request.db_path,
             bulletin_date=request.bulletin_date,
-            template_path=request.map_template_path,
-            font_path=request.font_path,
+            template_path=map_template_path,
+            font_path=font_path,
             output_path=map_output_dir
             / map_output_name(request.bulletin_date),
         )

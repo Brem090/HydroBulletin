@@ -171,7 +171,7 @@ class PipelineTests(unittest.TestCase):
             change = next(
                 row for row in rows if row["parameter_code"] == "DAILY_CHANGE"
             )
-            self.assertEqual(change["quality_status"], "SUSPICIOUS")
+            self.assertEqual(change["quality_status"], "NOT_CHECKED")
             self.assertIn("попередньої доби", change["quality_message"])
             level_times = {
                 row["observed_at"]

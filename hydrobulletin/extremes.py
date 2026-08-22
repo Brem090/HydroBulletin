@@ -4,18 +4,20 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Iterator
 
 from docx import Document
+from docx.document import Document as DocumentObject
+from docx.table import Table
 
 from .archive import seed_reference_extreme
 from .regions import RegionConfig
 
 
-def _iter_tables(container):
+def _iter_tables(container: Any) -> Iterator[Table]:
     seen: set[object] = set()
 
-    def walk(owner):
+    def walk(owner: Any) -> Iterator[Table]:
         for table in owner.tables:
             key = table._tbl
             if key in seen:
@@ -34,7 +36,7 @@ def _iter_tables(container):
     yield from walk(container)
 
 
-def _official_table(document: Document):
+def _official_table(document: DocumentObject) -> Table:
     for table in _iter_tables(document):
         if not table.rows or len(table.columns) < 10:
             continue
@@ -72,7 +74,7 @@ def seed_extremes_from_templates(
             maximum = _integer(row.cells[6].text)
             average = _integer(row.cells[7].text)
             minimum = _integer(row.cells[8].text)
-            if None in {maximum, average, minimum}:
+            if maximum is None or average is None or minimum is None:
                 continue
             if seed_reference_extreme(
                 db_path,

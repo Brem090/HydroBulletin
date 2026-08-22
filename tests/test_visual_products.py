@@ -289,7 +289,11 @@ class VisualProductTests(unittest.TestCase):
             db_path = create_test_archive(root)
             checked = False
 
-            def inspect_figure(figure, _output_path, _title) -> None:
+            def inspect_figure(
+                figure: Figure,
+                _output_path: Path,
+                _title: str,
+            ) -> None:
                 nonlocal checked
                 canvas = FigureCanvasAgg(figure)
                 canvas.draw()

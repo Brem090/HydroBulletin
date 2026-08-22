@@ -109,14 +109,33 @@ def run_batch_import(
     all_stations: Sequence[Station],
     hydro_stations_by_index: Mapping[str, Station],
     meteo_stations_by_index: Mapping[str, Station],
+    bulletin_date: str | None = None,
+    include_meteo: bool = True,
 ) -> BatchImportResult:
-    """Імпортує кожен підтримуваний файл, не зупиняючи пакет через один збій."""
+    """Імпортує підтримувані файли, не зупиняючи пакет через один збій.
+
+    ``bulletin_date`` обмежує пакет однією робочою датою. Це дає змогу GUI
+    безпечно працювати з папкою, у якій зберігаються повідомлення за кілька
+    днів, і не змішує їх у поточному запуску.
+    """
 
     hydro_results: list[PipelineResult] = []
     meteo_results: list[MeteoPipelineResult] = []
     errors: list[BatchError] = []
 
-    for item in discover_batch_files(folder):
+    files = discover_batch_files(folder)
+    if bulletin_date is not None:
+        try:
+            datetime.strptime(bulletin_date, "%d.%m.%Y")
+        except ValueError as exc:
+            raise ValueError("Дата має бути у форматі ДД.ММ.РРРР.") from exc
+        files = tuple(
+            item for item in files if item.bulletin_date == bulletin_date
+        )
+
+    for item in files:
+        if item.message_type == "SYNOP" and not include_meteo:
+            continue
         source = LocalFileSource(item.path)
         try:
             if item.message_type == "SYNOP":

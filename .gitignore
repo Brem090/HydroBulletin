@@ -10,6 +10,9 @@ artifacts/
 output/
 Готові матеріали/
 work/
+validation_results/
+demo_data/full_private/
 dist/
 build/
 *.spec
+!HydroBulletin.spec

@@ -5,20 +5,35 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Iterator, Mapping, Sequence
 
 from docx import Document
+from docx.document import Document as DocumentObject
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
+from docx.table import Table, _Cell
+from docx.text.paragraph import Paragraph
 
 from .archive import (
+    DatabaseRow,
     ProductResult,
+    database_float,
+    database_int,
     query_observations,
     read_reference_extremes,
     register_product,
+    required_database_int,
 )
-from .quality import CORRECTED, MISSING, VALID, worst_quality_status
+from .quality import (
+    CORRECTED,
+    INCONSISTENT_CHANGE,
+    MISSING,
+    OUT_OF_RANGE,
+    SUSPICIOUS,
+    VALID,
+    worst_quality_status,
+)
 from .regions import RegionConfig
 
 
@@ -33,9 +48,15 @@ PARAMETERS = (
 )
 
 QUALITY_DISPLAY = {
-    "INCONSISTENT_CHANGE": "INCONSISTENT\nCHANGE",
-    "OUT_OF_RANGE": "OUT OF\nRANGE",
+    VALID: "БЕЗ ЗАУВАЖЕНЬ",
+    "OK": "БЕЗ ЗАУВАЖЕНЬ",
+    MISSING: "ДАНІ\nВІДСУТНІ",
+    SUSPICIOUS: "ПІДОЗРІЛЕ\nЗНАЧЕННЯ",
+    OUT_OF_RANGE: "ПОЗА\nДІАПАЗОНОМ",
+    INCONSISTENT_CHANGE: "НЕУЗГОДЖЕНА\nЗМІНА",
     CORRECTED: "ВИПРАВЛЕНО",
+    "NOT_CHECKED": "НЕ\nПЕРЕВІРЕНО",
+    "INCOMPLETE": "НЕПОВНІ\nДАНІ",
 }
 
 PRECIPITATION_FONT_SIZE_PT = 10
@@ -109,9 +130,9 @@ def _format_precipitation(value: float | None) -> str:
 
 
 def _pick_measurement(
-    candidates: Sequence[dict[str, object]],
+    candidates: Sequence[DatabaseRow],
     parameter_code: str,
-) -> dict[str, object] | None:
+) -> DatabaseRow | None:
     matching = [
         row for row in candidates if row["parameter_code"] == parameter_code
     ]
@@ -149,21 +170,21 @@ def build_bulletin_rows(
         parameter_codes=PARAMETERS,
     )
     extremes = read_reference_extremes(db_path, tuple(hydro_indexes))
-    grouped: dict[str, list[dict[str, object]]] = {}
+    grouped: dict[str, list[DatabaseRow]] = {}
     for record in records:
         grouped.setdefault(str(record["station_index"]), []).append(record)
 
     result: list[BulletinRow] = []
     for station in region.stations:
         station_records = grouped.get(station.index, [])
-        selected: dict[str, dict[str, object] | None] = {
+        selected: dict[str, DatabaseRow | None] = {
             parameter: _pick_measurement(station_records, parameter)
             for parameter in PARAMETERS
         }
 
         hydro_precip = selected["PRECIPITATION"]
         meteo_index = precipitation_mapping.get(station.index)
-        meteo_precip: dict[str, object] | None = None
+        meteo_precip: DatabaseRow | None = None
         if meteo_index:
             meteo_precip = _pick_measurement(
                 grouped.get(meteo_index, []),
@@ -206,7 +227,7 @@ def build_bulletin_rows(
 
         def value(parameter: str) -> float | None:
             row = selected[parameter]
-            return None if row is None or row["value"] is None else float(row["value"])
+            return None if row is None else database_float(row["value"])
 
         def text_value(parameter: str) -> str:
             row = selected[parameter]
@@ -217,7 +238,10 @@ def build_bulletin_rows(
         observation_ids = tuple(
             sorted(
                 {
-                    int(row["observation_id"])
+                    required_database_int(
+                        row["observation_id"],
+                        "observation_id",
+                    )
                     for row in present_records
                     if row.get("observation_id") is not None
                 }
@@ -234,21 +258,9 @@ def build_bulletin_rows(
                 discharge=value("DISCHARGE"),
                 ice_phenomena=text_value("ICE_PHENOMENA"),
                 ice_thickness=value("ICE_THICKNESS"),
-                maximum_level=(
-                    None
-                    if extreme.get("maximum_level") is None
-                    else int(extreme["maximum_level"])
-                ),
-                average_level=(
-                    None
-                    if extreme.get("average_level") is None
-                    else int(extreme["average_level"])
-                ),
-                minimum_level=(
-                    None
-                    if extreme.get("minimum_level") is None
-                    else int(extreme["minimum_level"])
-                ),
+                maximum_level=database_int(extreme.get("maximum_level")),
+                average_level=database_int(extreme.get("average_level")),
+                minimum_level=database_int(extreme.get("minimum_level")),
                 quality_status=quality_status,
                 quality_message=" ".join(dict.fromkeys(quality_messages)),
                 precipitation_source=precipitation_source,
@@ -258,12 +270,12 @@ def build_bulletin_rows(
     return tuple(result)
 
 
-def _iter_tables(container):
+def _iter_tables(container: Any) -> Iterator[Table]:
     """Обходить також вкладені таблиці офіційних шаблонів."""
 
     seen_tables: set[object] = set()
 
-    def walk(owner):
+    def walk(owner: Any) -> Iterator[Table]:
         for table in owner.tables:
             table_key = table._tbl
             if table_key in seen_tables:
@@ -283,7 +295,7 @@ def _iter_tables(container):
     yield from walk(container)
 
 
-def _iter_paragraphs(doc: Document):
+def _iter_paragraphs(doc: DocumentObject) -> Iterator[Paragraph]:
     """Повертає абзаци документа, включно з усіма рівнями таблиць."""
 
     seen_paragraphs: set[object] = set()
@@ -309,7 +321,7 @@ def _iter_paragraphs(doc: Document):
                     yield paragraph
 
 
-def _set_paragraph_text(paragraph, text: str) -> None:
+def _set_paragraph_text(paragraph: Paragraph, text: str) -> None:
     """Замінює текст, зберігаючи формат видимого run шаблону."""
 
     runs = paragraph.runs
@@ -326,7 +338,10 @@ def _set_paragraph_text(paragraph, text: str) -> None:
         paragraph.add_run(text)
 
 
-def _replace_markers(doc: Document, replacements: Mapping[str, str]) -> None:
+def _replace_markers(
+    doc: DocumentObject,
+    replacements: Mapping[str, str],
+) -> None:
     for paragraph in _iter_paragraphs(doc):
         full_text = "".join(run.text for run in paragraph.runs)
         replaced = full_text
@@ -348,7 +363,7 @@ def _format_ukrainian_date(bulletin_date: str) -> str:
 
 
 def _replace_official_labels(
-    doc: Document,
+    doc: DocumentObject,
     *,
     bulletin_date: str,
     hydrologist: str,
@@ -382,7 +397,7 @@ def _replace_official_labels(
 
 
 def _set_cell_text(
-    cell,
+    cell: _Cell,
     text: str,
     *,
     color: RGBColor | None = None,
@@ -407,7 +422,7 @@ def _set_cell_text(
         target_run.font.size = Pt(font_size_pt)
 
 
-def _shade_cell(cell, fill: str) -> None:
+def _shade_cell(cell: _Cell, fill: str) -> None:
     properties = cell._tc.get_or_add_tcPr()
     shading = properties.find(qn("w:shd"))
     if shading is None:
@@ -416,8 +431,8 @@ def _shade_cell(cell, fill: str) -> None:
     shading.set(qn("w:fill"), fill)
 
 
-def _station_rows(table) -> dict[str, object]:
-    result: dict[str, object] = {}
+def _station_rows(table: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for row in table.rows[1:]:
         if not row.cells:
             continue
@@ -427,7 +442,7 @@ def _station_rows(table) -> dict[str, object]:
     return result
 
 
-def _find_bulletin_table(doc: Document):
+def _find_bulletin_table(doc: DocumentObject) -> tuple[str, Table]:
     """Визначає офіційну або розширену структуру шаблону."""
 
     extended_table = None
@@ -457,7 +472,7 @@ def _ice_text(item: BulletinRow) -> str:
     return ", ".join(parts)
 
 
-def _apply_ice_header(table, rows: Sequence[BulletinRow]) -> None:
+def _apply_ice_header(table: Table, rows: Sequence[BulletinRow]) -> None:
     has_ice = any(item.ice_phenomena for item in rows)
     has_thickness = any(item.ice_thickness is not None for item in rows)
     if not has_ice and not has_thickness:
@@ -476,7 +491,7 @@ def _apply_ice_header(table, rows: Sequence[BulletinRow]) -> None:
         _set_cell_text(cell, title, font_size_pt=8)
 
 
-def _fill_official_table(table, rows: Sequence[BulletinRow]) -> None:
+def _fill_official_table(table: Table, rows: Sequence[BulletinRow]) -> None:
     """Заповнює лише змінні поля, не торкаючись порогів і багаторічних даних."""
 
     expected_rows = len(rows) + 2
@@ -513,7 +528,7 @@ def _fill_official_table(table, rows: Sequence[BulletinRow]) -> None:
             )
 
 
-def _fill_extended_table(table, rows: Sequence[BulletinRow]) -> None:
+def _fill_extended_table(table: Table, rows: Sequence[BulletinRow]) -> None:
     """Зберігає сумісність із розширеним шаблоном HydroBulletin."""
 
     by_index = _station_rows(table)

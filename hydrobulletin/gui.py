@@ -11,8 +11,10 @@ import tkinter as tk
 from datetime import datetime, timedelta
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
+from typing import Any, Callable
 
 from .archive import (
+    DatabaseRow,
     cancel_correction,
     create_correction,
     initialize_archive,
@@ -21,7 +23,8 @@ from .archive import (
 )
 from .extremes import seed_extremes_from_templates
 from .levels import LevelPanelRow, build_level_panel_rows
-from .regions import REGIONS
+from .quality import quality_status_label
+from .regions import REGIONS, message_types_for_regions
 from .output_paths import MATERIALS_DIR_NAME, dated_output_dir
 from .sources import (
     GCST_MIRROR_BASE_URL,
@@ -52,6 +55,7 @@ RUN_BUTTON_TEXT = "✓ Створити вибрані матеріали"
 SOURCE_LABELS = {
     "Автоматично": "auto",
     "Локальний TXT-файл": "local",
+    "Папка TXT-файлів": "batch",
     "Архів SQLite": "database",
 }
 GCST_LABEL_TO_MODE = {
@@ -89,15 +93,6 @@ def parse_date(value: str) -> datetime:
     """Перетворює дату інтерфейсу на ``datetime``."""
 
     return datetime.strptime(value.strip(), "%d.%m.%Y")
-
-
-def message_types_for_regions(region_keys: tuple[str, ...]) -> tuple[str, ...]:
-    """Визначає потрібні гідрологічні повідомлення для вибраних бюлетенів."""
-
-    message_types = ["ZRUR52"]
-    if "lviv" in region_keys:
-        message_types.append("ZRUR71")
-    return tuple(message_types)
 
 
 def message_type_from_file(path: Path) -> str:
@@ -194,7 +189,7 @@ class CalendarPopup(tk.Toplevel):
         self,
         master: tk.Misc,
         selected_date: datetime,
-        callback,
+        callback: Callable[[str], None],
     ) -> None:
         super().__init__(master)
         self.title("Вибір дати")
@@ -290,9 +285,15 @@ class CalendarPopup(tk.Toplevel):
 class HydroBulletinApp:
     """Графічна форма запуску основного сценарію програми."""
 
-    def __init__(self, root: tk.Tk, project_dir: Path) -> None:
+    def __init__(
+        self,
+        root: tk.Tk,
+        resource_dir: Path,
+        data_dir: Path | None = None,
+    ) -> None:
         self.root = root
-        self.project_dir = Path(project_dir)
+        self.resource_dir = Path(resource_dir)
+        self.data_dir = Path(data_dir) if data_dir is not None else self.resource_dir
         today = datetime.now()
 
         self.root.title("HydroBulletin")
@@ -320,24 +321,28 @@ class HydroBulletinApp:
         self.file_var = tk.StringVar(
             master=self.root,
             value=str(
-                self.project_dir
+                self.resource_dir
                 / "demo_data"
-                / "week3"
+                / "regression"
                 / "12.07.2026_ZRUR52.txt"
             ),
         )
         self.meteo_file_var = tk.StringVar(
             master=self.root,
             value=str(
-                self.project_dir
+                self.resource_dir
                 / "demo_data"
-                / "week3"
+                / "regression"
                 / "12.07.2026_SYNOP.txt"
             ),
         )
+        self.batch_folder_var = tk.StringVar(
+            master=self.root,
+            value=str(self.resource_dir / "demo_data" / "full_private"),
+        )
         self.output_var = tk.StringVar(
             master=self.root,
-            value=str(self.project_dir / MATERIALS_DIR_NAME),
+            value=str(self.data_dir / MATERIALS_DIR_NAME),
         )
         self.region_vars = {
             region.key: tk.BooleanVar(master=self.root, value=False)
@@ -377,9 +382,9 @@ class HydroBulletinApp:
 
     def make_button(
         self,
-        parent,
+        parent: tk.Misc,
         text: str,
-        command,
+        command: Callable[[], object],
         *,
         bg: str | None = None,
         fg: str = "white",
@@ -882,6 +887,28 @@ class HydroBulletinApp:
             command=lambda: self._choose_file(self.meteo_file_var),
         )
 
+        self.batch_folder_frame = tk.Frame(
+            source_card,
+            bg=SUBTLE_CARD,
+        )
+        self.batch_folder_frame.columnconfigure(1, weight=1)
+        self.batch_folder_frame.grid(
+            row=3,
+            column=0,
+            columnspan=3,
+            sticky="ew",
+        )
+        self._path_row(
+            self.batch_folder_frame,
+            row=0,
+            label="Папка з ZRUR/SYNOP",
+            variable=self.batch_folder_var,
+            command=lambda: self._choose_folder(
+                self.batch_folder_var,
+                "Папка з TXT-файлами за одну дату",
+            ),
+        )
+
         self._update_source_fields()
 
     def _build_output_section(self) -> None:
@@ -927,7 +954,7 @@ class HydroBulletinApp:
             pady=(0, 8),
         )
 
-    def _update_source_fields(self, _event=None) -> None:
+    def _update_source_fields(self, _event: Any = None) -> None:
         source_mode = SOURCE_LABELS.get(self.source_var.get())
         if source_mode == "auto":
             self.gcst_frame.grid()
@@ -937,6 +964,10 @@ class HydroBulletinApp:
             self.local_files_frame.grid()
         else:
             self.local_files_frame.grid_remove()
+        if source_mode == "batch":
+            self.batch_folder_frame.grid()
+        else:
+            self.batch_folder_frame.grid_remove()
         self.root.after_idle(self._refresh_scroll_region)
 
     def _update_chart_fields(self) -> None:
@@ -951,7 +982,7 @@ class HydroBulletinApp:
         self.root.after_idle(self._refresh_scroll_region)
 
     @staticmethod
-    def _source_label(parent, text: str, row: int) -> None:
+    def _source_label(parent: tk.Misc, text: str, row: int) -> None:
         background = parent.cget("bg")
         tk.Label(
             parent,
@@ -970,12 +1001,12 @@ class HydroBulletinApp:
 
     def _path_row(
         self,
-        parent,
+        parent: tk.Misc,
         *,
         row: int,
         label: str,
         variable: tk.StringVar,
-        command,
+        command: Callable[[], object],
     ) -> None:
         self._source_label(parent, label, row)
         entry = tk.Entry(
@@ -1136,14 +1167,14 @@ class HydroBulletinApp:
             clear=True,
         )
 
-    def _refresh_scroll_region(self, _event=None) -> None:
+    def _refresh_scroll_region(self, _event: Any = None) -> None:
         self.main_canvas.configure(scrollregion=self.main_canvas.bbox("all"))
 
-    def _resize_scroll_content(self, event) -> None:
+    def _resize_scroll_content(self, event: Any) -> None:
         self.main_canvas.itemconfigure(self.scroll_window, width=event.width)
 
     @staticmethod
-    def _mousewheel_units(event) -> int:
+    def _mousewheel_units(event: Any) -> int:
         delta = getattr(event, "delta", 0)
         if not delta:
             return 0
@@ -1152,7 +1183,7 @@ class HydroBulletinApp:
             units = -1 if delta > 0 else 1
         return max(-4, min(4, units))
 
-    def _on_mousewheel(self, event):
+    def _on_mousewheel(self, event: Any) -> str | None:
         try:
             if event.widget.winfo_toplevel() is not self.root:
                 return None
@@ -1164,7 +1195,7 @@ class HydroBulletinApp:
             self.main_canvas.yview_scroll(units, "units")
         return "break"
 
-    def _on_main_scrollbar(self, *args) -> None:
+    def _on_main_scrollbar(self, *args: str) -> None:
         if not args:
             return
         command = args[0]
@@ -1219,6 +1250,11 @@ class HydroBulletinApp:
         if selected:
             variable.set(selected)
 
+    def _choose_folder(self, variable: tk.StringVar, title: str) -> None:
+        selected = filedialog.askdirectory(title=title, parent=self.root)
+        if selected:
+            variable.set(selected)
+
     def _choose_output(self) -> None:
         selected = filedialog.askdirectory(
             title="Папка для створених матеріалів",
@@ -1270,7 +1306,7 @@ class HydroBulletinApp:
 
     def _prepare_operational_archive(self) -> Path:
         db_path = (
-            self.project_dir
+            self.data_dir
             / "archive"
             / "database"
             / "hydro_archive.sqlite"
@@ -1279,7 +1315,7 @@ class HydroBulletinApp:
         seed_extremes_from_templates(
             db_path,
             REGIONS,
-            self.project_dir / "templates" / "bulletins",
+            self.resource_dir / "templates" / "bulletins",
         )
         return db_path
 
@@ -1355,7 +1391,7 @@ class HydroBulletinApp:
             "morning": "08:00",
             "evening": "20:00",
             "change": "ΔH",
-            "quality": "QC",
+            "quality": "Статус якості",
             "correction": "Активна правка",
         }
         widths = {
@@ -1364,7 +1400,7 @@ class HydroBulletinApp:
             "morning": 80,
             "evening": 80,
             "change": 80,
-            "quality": 145,
+            "quality": 180,
             "correction": 170,
         }
         for column in columns:
@@ -1444,7 +1480,7 @@ class HydroBulletinApp:
                         self._panel_number(item.morning_level),
                         self._panel_number(item.previous_evening_level),
                         self._panel_number(item.daily_change, signed=True),
-                        item.quality_status,
+                        quality_status_label(item.quality_status),
                         ", ".join(corrections) or "—",
                     ),
                     tags=(tag,) if tag else (),
@@ -1461,14 +1497,14 @@ class HydroBulletinApp:
                 return None
             return rows_by_index.get(selection[0])
 
-        def show_details(_event=None) -> None:
+        def show_details(_event: Any = None) -> None:
             selection = tree.selection()
             if not selection:
                 return
             item = rows_by_index[selection[0]]
             details_var.set(
                 item.quality_message
-                or "Зауважень QC для вибраних значень немає."
+                or "Зауважень контролю якості для вибраних значень немає."
             )
 
         def apply_correction(parameter_code: str) -> None:
@@ -1692,7 +1728,7 @@ class HydroBulletinApp:
                 bd=1,
             ).pack(fill="x", ipady=5)
 
-        records: dict[str, dict[str, object]] = {}
+        records: dict[str, DatabaseRow] = {}
 
         def refresh_extremes(select_index: str | None = None) -> None:
             records.clear()
@@ -1716,7 +1752,7 @@ class HydroBulletinApp:
                 tree.selection_set(select_index)
                 tree.see(select_index)
 
-        def load_selected(_event=None) -> None:
+        def load_selected(_event: Any = None) -> None:
             selection = tree.selection()
             if not selection:
                 return
@@ -1825,8 +1861,15 @@ class HydroBulletinApp:
             if source_mode == "local"
             else None
         )
+        batch_folder = (
+            optional_path(self.batch_folder_var.get())
+            if source_mode == "batch"
+            else None
+        )
         if source_mode == "local" and local_file is None:
             raise ValueError("Потрібно вибрати гідрологічний TXT-файл.")
+        if source_mode == "batch" and batch_folder is None:
+            raise ValueError("Потрібно вибрати папку з TXT-файлами.")
 
         message_regions = region_keys
         if create_map and "lviv" not in message_regions:
@@ -1848,21 +1891,22 @@ class HydroBulletinApp:
             message_types=message_types,
             local_file=local_file,
             meteo_file=meteo_file,
+            batch_folder=batch_folder,
             db_path=(
-                self.project_dir
+                self.data_dir
                 / "archive"
                 / "database"
                 / "hydro_archive.sqlite"
             ),
-            raw_root=self.project_dir / "archive" / "raw",
-            templates_dir=self.project_dir / "templates" / "bulletins",
+            raw_root=self.data_dir / "archive" / "raw",
+            templates_dir=self.resource_dir / "templates" / "bulletins",
             output_dir=Path(output_text),
             mapping_path=(
-                self.project_dir
+                self.resource_dir
                 / "config"
                 / "precipitation_mapping.json"
             ),
-            env_path=self.project_dir / ".env",
+            env_path=self.data_dir / ".env",
             gcst_source_mode=GCST_LABEL_TO_MODE[self.gcst_source_var.get()],
             region_keys=region_keys,
             hydrologist=DEFAULT_HYDROLOGIST,
@@ -1870,13 +1914,13 @@ class HydroBulletinApp:
             create_bulletins=bool(region_keys),
             create_map=create_map,
             map_template_path=(
-                self.project_dir
+                self.resource_dir
                 / "templates"
                 / "maps"
                 / "HydroMap_UHMC_Lviv_template_clean.png"
             ),
             font_path=(
-                self.project_dir
+                self.resource_dir
                 / "resources"
                 / "fonts"
                 / "e-Ukraine-Regular.otf"
@@ -1952,7 +1996,10 @@ class HydroBulletinApp:
         lines = [
             f"Гідрологічних імпортів: {len(result.hydro_imports)}",
             f"SYNOP імпортовано: {'так' if result.meteo_import else 'ні'}",
-            f"QC перевірено значень: {result.quality_summary.checked}",
+            (
+                "Контролем якості перевірено значень: "
+                f"{result.quality_summary.checked}"
+            ),
             f"Створено бюлетенів: {len(result.bulletins)}",
             f"Створено карту: {'так' if result.map_result else 'ні'}",
             f"Створено графіків: {len(result.charts)}",
@@ -1994,11 +2041,11 @@ class HydroBulletinApp:
         self.log_text.configure(state="disabled")
 
 
-def launch_gui(project_dir: Path) -> None:
+def launch_gui(resource_dir: Path, data_dir: Path | None = None) -> None:
     """Налаштовує масштабування Windows і запускає GUI."""
 
     enable_high_dpi_awareness()
     root = tk.Tk()
     configure_tk_scaling(root)
-    HydroBulletinApp(root, project_dir)
+    HydroBulletinApp(root, resource_dir, data_dir)
     root.mainloop()

@@ -9,18 +9,19 @@ from pathlib import Path
 from typing import Iterable
 
 from hydrobulletin.archive import SCHEMA_VERSION, archive_summary, initialize_archive
-from hydrobulletin.batch import run_batch_import
 from hydrobulletin.models import HydroObservation
 from hydrobulletin.output_paths import MATERIALS_DIR_NAME
 from hydrobulletin.pipeline import PipelineResult
-from hydrobulletin.regions import REGIONS
+from hydrobulletin.quality import quality_status_label
+from hydrobulletin.regions import REGIONS, message_types_for_regions
+from hydrobulletin.runtime import resolve_runtime_paths
 from hydrobulletin.sources import (
     GCST_SOURCE_AUTO,
     GCST_SOURCE_MODES,
     SUPPORTED_MESSAGE_TYPES,
     DataSourceError,
 )
-from hydrobulletin.stations import ALL_STATIONS, METEO_STATIONS, STATIONS_BY_INDEX
+from hydrobulletin.stations import ALL_STATIONS
 from hydrobulletin.workflow import (
     DEFAULT_HYDROLOGIST,
     WorkflowRequest,
@@ -30,17 +31,25 @@ from hydrobulletin.workflow import (
 
 
 DEFAULT_DATE = "12.07.2026"
-PROJECT_DIR = Path(__file__).resolve().parent
-DEFAULT_FILE = PROJECT_DIR / "demo_data" / "week3" / "12.07.2026_ZRUR52.txt"
-DEFAULT_ARCHIVE_DB = PROJECT_DIR / "archive" / "database" / "hydro_archive.sqlite"
-DEFAULT_RAW_ROOT = PROJECT_DIR / "archive" / "raw"
-DEFAULT_TEMPLATES = PROJECT_DIR / "templates" / "bulletins"
-DEFAULT_MAP_TEMPLATE = (
-    PROJECT_DIR / "templates" / "maps" / "HydroMap_UHMC_Lviv_template_clean.png"
+RUNTIME_PATHS = resolve_runtime_paths(Path(__file__))
+RESOURCE_DIR = RUNTIME_PATHS.resource_root
+APPLICATION_DIR = RUNTIME_PATHS.data_root
+# Спільний корінь ресурсів для CLI, GUI та регресійних сценаріїв.
+PROJECT_DIR = RESOURCE_DIR
+DEFAULT_FILE = (
+    RESOURCE_DIR / "demo_data" / "regression" / "12.07.2026_ZRUR52.txt"
 )
-DEFAULT_FONT = PROJECT_DIR / "resources" / "fonts" / "e-Ukraine-Regular.otf"
-DEFAULT_OUTPUT = PROJECT_DIR / MATERIALS_DIR_NAME
-DEFAULT_MAPPING = PROJECT_DIR / "config" / "precipitation_mapping.json"
+DEFAULT_ARCHIVE_DB = (
+    APPLICATION_DIR / "archive" / "database" / "hydro_archive.sqlite"
+)
+DEFAULT_RAW_ROOT = APPLICATION_DIR / "archive" / "raw"
+DEFAULT_TEMPLATES = RESOURCE_DIR / "templates" / "bulletins"
+DEFAULT_MAP_TEMPLATE = (
+    RESOURCE_DIR / "templates" / "maps" / "HydroMap_UHMC_Lviv_template_clean.png"
+)
+DEFAULT_FONT = RESOURCE_DIR / "resources" / "fonts" / "e-Ukraine-Regular.otf"
+DEFAULT_OUTPUT = APPLICATION_DIR / MATERIALS_DIR_NAME
+DEFAULT_MAPPING = RESOURCE_DIR / "config" / "precipitation_mapping.json"
 
 
 def configure_console() -> None:
@@ -176,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--env-file",
         type=Path,
-        default=PROJECT_DIR / ".env",
+        default=APPLICATION_DIR / ".env",
         help="Файл конфігурації онлайн-доступу.",
     )
     parser.add_argument(
@@ -315,7 +324,7 @@ def print_workflow_result(result: WorkflowResult) -> None:
     print("-" * 36)
     print(f"Перевірено значень: {result.quality_summary.checked}")
     for status, count in sorted(result.quality_summary.counts.items()):
-        print(f"{status}: {count}")
+        print(f"{quality_status_label(status)}: {count}")
 
     if result.bulletins:
         print()
@@ -366,18 +375,30 @@ def print_workflow_result(result: WorkflowResult) -> None:
         print(f"{key}: {result.archive_counts.get(key, 0)}")
 
 
-def _workflow_request(args: argparse.Namespace, *, source_mode: str | None = None):
-    message_types = (
-        tuple(args.online_types)
-        if args.source == "online"
-        else (args.message_type,)
-    )
+def _workflow_request(
+    args: argparse.Namespace,
+    *,
+    source_mode: str | None = None,
+) -> WorkflowRequest:
+    effective_source = source_mode or args.source
+    message_regions = tuple(args.regions)
+    if args.create_map and "lviv" not in message_regions:
+        message_regions += ("lviv",)
+    if effective_source == "batch":
+        message_types = message_types_for_regions(message_regions)
+    elif args.source == "online":
+        message_types = tuple(args.online_types)
+    else:
+        message_types = (args.message_type,)
+
     return WorkflowRequest(
         bulletin_date=args.date,
-        source_mode=source_mode or args.source,
+        source_mode=effective_source,
         message_types=message_types,
         local_file=args.file,
         meteo_file=args.meteo_file,
+        batch_folder=args.batch_folder if effective_source == "batch" else None,
+        batch_all_dates=effective_source == "batch",
         db_path=args.archive_db,
         raw_root=args.raw_root,
         templates_dir=args.templates_dir,
@@ -401,39 +422,14 @@ def _workflow_request(args: argparse.Namespace, *, source_mode: str | None = Non
 
 
 def _run_batch(args: argparse.Namespace) -> WorkflowResult:
-    batch = run_batch_import(
-        args.batch_folder,
-        raw_root=args.raw_root,
-        db_path=args.archive_db,
-        all_stations=ALL_STATIONS,
-        hydro_stations_by_index=STATIONS_BY_INDEX,
-        meteo_stations_by_index={
-            station.index: station for station in METEO_STATIONS
-        },
-    )
+    result = execute_workflow(_workflow_request(args, source_mode="batch"))
     print(
-        f"Пакетний імпорт: {batch.processed_files} файлів, "
-        f"помилок: {len(batch.errors)}."
+        "Пакетний імпорт папки: "
+        f"{len(result.hydro_imports)} ZRUR-файлів, "
+        f"SYNOP: {'так' if result.meteo_import is not None else 'ні'}. "
+        f"Матеріали формуються за {args.date}."
     )
-    for error in batch.errors:
-        print(f"Зауваження: {error.path}: {error.message}", file=sys.stderr)
-
-    result = execute_workflow(
-        _workflow_request(args, source_mode="database")
-    )
-    if not batch.errors:
-        return result
-    return WorkflowResult(
-        result.hydro_imports,
-        result.meteo_import,
-        result.quality_summary,
-        result.bulletins,
-        result.warnings
-        + tuple(f"{item.path}: {item.message}" for item in batch.errors),
-        result.archive_counts,
-        result.map_result,
-        result.charts,
-    )
+    return result
 
 
 def main() -> int:
@@ -444,7 +440,7 @@ def main() -> int:
         try:
             from hydrobulletin.gui import launch_gui
 
-            launch_gui(PROJECT_DIR)
+            launch_gui(RESOURCE_DIR, APPLICATION_DIR)
         except KeyboardInterrupt:
             print("Роботу GUI зупинено користувачем.", file=sys.stderr)
             return 130
@@ -466,7 +462,7 @@ def main() -> int:
         print(f"Версія схеми: {SCHEMA_VERSION}")
         return 0
 
-    print("HYDROBULLETIN — ФІНАЛІЗОВАНИЙ MVP, ТИЖДЕНЬ 5")
+    print("HYDROBULLETIN — ОПЕРАЦІЙНИЙ СЦЕНАРІЙ")
     print("=" * 58)
     print(f"Дата бюлетеня: {args.date}")
     print(f"Режим: {'batch' if args.batch_folder else args.source}")

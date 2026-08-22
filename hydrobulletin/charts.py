@@ -20,12 +20,22 @@ import matplotlib
 matplotlib.use("Agg")
 
 from matplotlib import dates as mdates
+from matplotlib.artist import Artist
+from matplotlib.axes import Axes
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from matplotlib.font_manager import FontProperties, fontManager
+from matplotlib.legend import Legend
 from matplotlib.ticker import MaxNLocator
 
-from .archive import ProductResult, query_observations, register_product
+from .archive import (
+    DatabaseRow,
+    ProductResult,
+    database_float,
+    query_observations,
+    register_product,
+    required_database_int,
+)
 
 
 LEVEL_CHART = "LEVEL"
@@ -98,14 +108,14 @@ def _days(start: datetime, end: datetime) -> tuple[datetime, ...]:
     return tuple(start + timedelta(days=offset) for offset in range((end - start).days + 1))
 
 
-def _row_time(row: dict[str, object]) -> datetime:
+def _row_time(row: DatabaseRow) -> datetime:
     return datetime.fromisoformat(str(row["observed_at"]))
 
 
 def _rows_by_timestamp(
-    rows: Iterable[dict[str, object]],
-) -> dict[datetime, dict[str, object]]:
-    result: dict[datetime, dict[str, object]] = {}
+    rows: Iterable[DatabaseRow],
+) -> dict[datetime, DatabaseRow]:
+    result: dict[datetime, DatabaseRow] = {}
     for row in rows:
         observed_at = _row_time(row)
         result[observed_at.replace(microsecond=0)] = row
@@ -113,7 +123,7 @@ def _rows_by_timestamp(
 
 
 def _regular_series(
-    rows: Iterable[dict[str, object]],
+    rows: Iterable[DatabaseRow],
     start: datetime,
     end: datetime,
     hours: Sequence[int],
@@ -130,10 +140,8 @@ def _regular_series(
     return timestamps, values
 
 
-def _number(row: dict[str, object] | None) -> float | None:
-    if row is None or row["value"] is None:
-        return None
-    return float(row["value"])
+def _number(row: DatabaseRow | None) -> float | None:
+    return None if row is None else database_float(row["value"])
 
 
 def _font_properties(font_path: Path | None) -> FontProperties:
@@ -149,7 +157,7 @@ def _font_properties(font_path: Path | None) -> FontProperties:
     return FontProperties(family="DejaVu Sans")
 
 
-def _apply_font(axes, font: FontProperties) -> None:
+def _apply_font(axes: Axes, font: FontProperties) -> None:
     for label in (*axes.get_xticklabels(), *axes.get_yticklabels()):
         label.set_fontproperties(font)
 
@@ -162,7 +170,7 @@ def _quality_marker(status: str) -> tuple[str, str] | None:
     return "#F39C12", "Потребує уваги (QC)"
 
 
-def _plot_quality_points(axes, rows: Iterable[dict[str, object]]) -> int:
+def _plot_quality_points(axes: Axes, rows: Iterable[DatabaseRow]) -> int:
     labels_used: set[str] = set()
     flagged = 0
     for row in rows:
@@ -196,7 +204,7 @@ def _available_values(values: Iterable[float | None]) -> list[float]:
 
 
 def _plot_hydrograph_series(
-    axes,
+    axes: Axes,
     timestamps: Sequence[datetime],
     values: Sequence[float | None],
 ) -> None:
@@ -255,7 +263,7 @@ def _plot_hydrograph_series(
 
 
 def _configure_y_axis(
-    axes,
+    axes: Axes,
     values: Iterable[float | None],
     *,
     include_zero: bool,
@@ -304,7 +312,7 @@ def _period_caption(start: datetime, end: datetime) -> str:
 
 def _configure_axes(
     figure: Figure,
-    axes,
+    axes: Axes,
     *,
     title: str,
     subtitle: str,
@@ -400,13 +408,13 @@ def _configure_axes(
 
 def _deduplicated_legend(
     figure: Figure,
-    axes,
+    axes: Axes,
     font: FontProperties,
-):
+) -> Legend | None:
     """Розміщує умовні позначення в окремому рядку під графіком."""
 
     handles, labels = axes.get_legend_handles_labels()
-    unique: dict[str, object] = {}
+    unique: dict[str, Artist] = {}
     for handle, label in zip(handles, labels):
         if label and label not in unique:
             unique[label] = handle
@@ -449,7 +457,7 @@ def _register_chart(
     start_date: str,
     end_date: str,
     output_path: Path,
-    rows: list[dict[str, object]],
+    rows: list[DatabaseRow],
     available_points: int,
     missing_points: int,
     flagged_points: int,
@@ -462,7 +470,10 @@ def _register_chart(
         region_key=station_index,
         bulletin_date=end_date,
         output_path=str(output_path),
-        observation_ids=(int(row["observation_id"]) for row in rows),
+        observation_ids=(
+            required_database_int(row["observation_id"], "observation_id")
+            for row in rows
+        ),
         metadata={
             "station_index": station_index,
             "station_name": station_name,
