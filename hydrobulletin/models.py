@@ -4,6 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
+
+
+PRECIPITATION_STATE_MEASURED = "MEASURED"
+PRECIPITATION_STATE_NO_RAIN = "NO_RAIN"
+PRECIPITATION_STATE_TRACE = "TRACE"
 
 
 @dataclass(frozen=True)
@@ -32,6 +38,7 @@ class HydroObservation:
     quality_status: str = "NOT_CHECKED"
     water_temperature_c: float | None = None
     precipitation_mm: float | None = None
+    precipitation_state: str = ""
     discharge_m3_s: float | None = None
     ice_phenomena: str = ""
     ice_thickness_cm: float | None = None
@@ -55,7 +62,7 @@ class HydroObservation:
 
     @property
     def evening_level_text(self) -> str:
-        """Рівень о 20:00 попередньої доби у зручному для таблиці вигляді."""
+        """Рівень о 20:00 попередньої доби у форматі для таблиці."""
 
         if self.evening_level is None:
             return "немає даних"
@@ -78,10 +85,22 @@ class HydroObservation:
     def precipitation_text(self) -> str:
         if self.precipitation_mm is None:
             return "немає даних"
-        if 0.0 <= self.precipitation_mm < 1.0:
+        if (
+            self.precipitation_state == PRECIPITATION_STATE_NO_RAIN
+            or (
+                self.precipitation_mm == 0.0
+                and self.precipitation_state != PRECIPITATION_STATE_TRACE
+            )
+        ):
+            return ""
+        if -1.0 < self.precipitation_mm < 1.0:
             value = f"{self.precipitation_mm:.1f}".replace(".", ",")
         else:
-            value = self._number_text(self.precipitation_mm, digits=1)
+            rounded = Decimal(str(self.precipitation_mm)).quantize(
+                Decimal("1"),
+                rounding=ROUND_HALF_UP,
+            )
+            value = str(int(rounded))
         return f"{value} мм"
 
     @property
@@ -180,7 +199,11 @@ def observation_measurements(
                 observed_at=observation.observed_at,
                 parameter_code=parameter_code,
                 value=float(value),
-                text_value="",
+                text_value=(
+                    observation.precipitation_state
+                    if parameter_code == "PRECIPITATION"
+                    else ""
+                ),
                 unit=unit,
                 **common,
             )

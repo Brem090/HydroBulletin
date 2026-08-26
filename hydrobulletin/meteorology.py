@@ -11,7 +11,13 @@ from typing import Mapping, Sequence
 
 from .archive import ImportResult, archive_raw_text, import_observations, initialize_archive
 from .decoder import normalize_token
-from .models import HydroObservation, Station
+from .models import (
+    PRECIPITATION_STATE_MEASURED,
+    PRECIPITATION_STATE_NO_RAIN,
+    PRECIPITATION_STATE_TRACE,
+    HydroObservation,
+    Station,
+)
 from .quality import QualitySummary, run_initial_quality_control
 from .sources import TextDataSource
 from .timeutils import ukraine_local_to_utc
@@ -37,6 +43,14 @@ class MeteoPipelineResult:
     source_type: str
     source_name: str
     quality_summary: QualitySummary
+
+
+@dataclass(frozen=True)
+class DecodedPrecipitation:
+    """Числове значення опадів разом зі способом його подання."""
+
+    amount: float
+    state: str
 
 
 def parse_synop_records(raw_text: str) -> list[SynopRecord]:
@@ -190,21 +204,43 @@ def synop_precipitation_indicator(record: SynopRecord) -> int | None:
     if len(record.groups) < 2:
         return None
     indicator_group = normalize_token(record.groups[1])
-    if len(indicator_group) != 5 or not indicator_group.isdigit():
+    if re.fullmatch(r"[0-4][0-9/]{4}", indicator_group) is None:
         return None
-    indicator = int(indicator_group[0])
-    return indicator if 0 <= indicator <= 4 else None
+    return int(indicator_group[0])
 
 
-def _precip_amount(record: SynopRecord | None, period_hours: int) -> float | None:
+def _precipitation_value(
+    record: SynopRecord | None,
+    period_hours: int,
+) -> DecodedPrecipitation | None:
     if record is None:
         return None
-    for amount, period, _group in synop_precip_groups(record):
+    for amount, period, group in synop_precip_groups(record):
         if period == period_hours:
-            return amount
+            rrr = int(group[1:4])
+            if rrr == 990:
+                state = PRECIPITATION_STATE_TRACE
+            elif rrr == 0:
+                state = PRECIPITATION_STATE_NO_RAIN
+            else:
+                state = PRECIPITATION_STATE_MEASURED
+            return DecodedPrecipitation(amount, state)
     if synop_precipitation_indicator(record) == 3:
-        return 0.0
+        return DecodedPrecipitation(0.0, PRECIPITATION_STATE_NO_RAIN)
     return None
+
+
+def _combine_precipitation(
+    values: Sequence[DecodedPrecipitation],
+) -> DecodedPrecipitation:
+    amount = round(sum(item.amount for item in values), 1)
+    if amount > 0.0:
+        state = PRECIPITATION_STATE_MEASURED
+    elif any(item.state == PRECIPITATION_STATE_TRACE for item in values):
+        state = PRECIPITATION_STATE_TRACE
+    else:
+        state = PRECIPITATION_STATE_NO_RAIN
+    return DecodedPrecipitation(amount, state)
 
 
 def daily_precipitation(
@@ -217,6 +253,14 @@ def daily_precipitation(
     половина доби складається з двох 6-годинних сум.
     """
 
+    result = _daily_precipitation_result(records, bulletin_date)
+    return None if result is None else result.amount
+
+
+def _daily_precipitation_result(
+    records: Sequence[SynopRecord],
+    bulletin_date: str,
+) -> DecodedPrecipitation | None:
     try:
         bulletin = datetime.strptime(bulletin_date, "%d.%m.%Y")
     except ValueError as exc:
@@ -231,18 +275,20 @@ def daily_precipitation(
     def half_day(
         end_local: datetime,
         middle_local: datetime,
-    ) -> float | None:
-        amount_12 = _precip_amount(at_local(end_local), 12)
-        if amount_12 is not None:
-            return amount_12
+    ) -> DecodedPrecipitation | None:
+        value_12 = _precipitation_value(at_local(end_local), 12)
+        if value_12 is not None:
+            return value_12
 
-        amounts_6 = tuple(
-            _precip_amount(at_local(local_dt), 6)
+        values_6 = tuple(
+            _precipitation_value(at_local(local_dt), 6)
             for local_dt in (middle_local, end_local)
         )
-        if any(amount is None for amount in amounts_6):
+        if any(value is None for value in values_6):
             return None
-        return sum(float(amount) for amount in amounts_6 if amount is not None)
+        return _combine_precipitation(
+            tuple(value for value in values_6 if value is not None)
+        )
 
     first = half_day(
         previous_day.replace(hour=21, minute=0, second=0, microsecond=0),
@@ -254,7 +300,7 @@ def daily_precipitation(
     )
     if first is None or second is None:
         return None
-    return round(first + second, 1)
+    return _combine_precipitation((first, second))
 
 
 def records_by_station(
@@ -285,8 +331,11 @@ def decode_meteo_precipitation(
 
     for index, station in stations_by_index.items():
         station_records = grouped.get(index, [])
-        amount = daily_precipitation(station_records, bulletin_date)
-        if amount is None:
+        precipitation = _daily_precipitation_result(
+            station_records,
+            bulletin_date,
+        )
+        if precipitation is None:
             continue
         raw_record = "\n".join(record.raw_record for record in station_records)
         result.append(
@@ -298,7 +347,8 @@ def decode_meteo_precipitation(
                 evening_level=None,
                 raw_record=raw_record,
                 quality_status="NOT_CHECKED",
-                precipitation_mm=amount,
+                precipitation_mm=precipitation.amount,
+                precipitation_state=precipitation.state,
                 observed_at=observed_at,
                 source_type=source_type,
                 source_file=source_file,

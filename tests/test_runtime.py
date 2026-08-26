@@ -80,6 +80,7 @@ class WindowsLauncherTests(unittest.TestCase):
         )
         self.assertNotIn('("demo_data", "demo_data")', spec_text)
         self.assertNotIn("full_private", spec_text)
+        self.assertNotIn('"unittest"', spec_text)
 
 
 if __name__ == "__main__":

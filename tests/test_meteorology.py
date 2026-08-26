@@ -18,6 +18,10 @@ from hydrobulletin.meteorology import (
     synop_precip_period_hours,
     synop_precipitation_indicator,
 )
+from hydrobulletin.models import (
+    PRECIPITATION_STATE_NO_RAIN,
+    PRECIPITATION_STATE_TRACE,
+)
 from hydrobulletin.stations import METEO_STATIONS
 from hydrobulletin.timeutils import ukraine_local_to_utc, ukraine_utc_offset_hours
 
@@ -120,13 +124,49 @@ class SynopParserTests(unittest.TestCase):
                 "Тест",
                 datetime(2026, 8, 8, 6),
                 "33288",
-                ("33288", "32998", "50000"),
-                "33288 32998 50000",
+                ("33288", "329//", "50000"),
+                "33288 329// 50000",
             ),
         ]
 
         self.assertEqual(synop_precipitation_indicator(records[1]), 3)
         self.assertEqual(daily_precipitation(records, "08.08.2026"), 6.0)
+
+        station = next(item for item in METEO_STATIONS if item.index == "33288")
+        no_rain = """SM Синоптичне зведення: Тест
+2026-08-07 18:00:00
+33288 329// 50000 =
+2026-08-08 06:00:00
+33288 32998 50000 =
+"""
+        observations = decode_meteo_precipitation(
+            no_rain,
+            "08.08.2026",
+            {station.index: station},
+            source_type="local",
+            source_file="no-rain.txt",
+        )
+        self.assertEqual(len(observations), 1)
+        self.assertEqual(observations[0].precipitation_mm, 0.0)
+        self.assertEqual(
+            observations[0].precipitation_state,
+            PRECIPITATION_STATE_NO_RAIN,
+        )
+
+        trace = no_rain.replace("329// 50000", "11111 555 69902", 1)
+        trace_observations = decode_meteo_precipitation(
+            trace,
+            "08.08.2026",
+            {station.index: station},
+            source_type="local",
+            source_file="trace.txt",
+        )
+        self.assertEqual(len(trace_observations), 1)
+        self.assertEqual(trace_observations[0].precipitation_mm, 0.0)
+        self.assertEqual(
+            trace_observations[0].precipitation_state,
+            PRECIPITATION_STATE_TRACE,
+        )
 
     def test_ir_four_keeps_an_incomplete_daily_total_missing(self) -> None:
         records = [
@@ -159,6 +199,22 @@ class SynopParserTests(unittest.TestCase):
 
         self.assertEqual(synop_precipitation_indicator(records[1]), 4)
         self.assertIsNone(daily_precipitation(records, "08.08.2026"))
+
+        station = next(item for item in METEO_STATIONS if item.index == "33288")
+        unavailable = """SM Синоптичне зведення: Тест
+2026-08-07 18:00:00
+33288 42998 50000 =
+2026-08-08 06:00:00
+33288 42998 50000 =
+"""
+        unavailable_observations = decode_meteo_precipitation(
+            unavailable,
+            "08.08.2026",
+            {station.index: station},
+            source_type="local",
+            source_file="unavailable.txt",
+        )
+        self.assertEqual(unavailable_observations, [])
 
     def test_incomplete_six_hour_fallback_is_not_reported_as_daily(self) -> None:
         records = [
@@ -196,6 +252,10 @@ class SynopParserTests(unittest.TestCase):
         self.assertEqual(by_index["33288"].precipitation_mm, 3.0)
         self.assertEqual(by_index["33536"].precipitation_mm, 15.0)
         self.assertEqual(by_index["33557"].precipitation_mm, 0.0)
+        self.assertEqual(
+            by_index["33557"].precipitation_state,
+            PRECIPITATION_STATE_TRACE,
+        )
 
 
 class MappingTests(unittest.TestCase):

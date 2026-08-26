@@ -80,7 +80,7 @@ def chart_output_name(
     start_date: str,
     end_date: str,
 ) -> str:
-    """Повертає стабільну назву файла без залежності від назви поста."""
+    """Повертає стабільну назву файлу без залежності від назви поста."""
 
     start, end = _parse_period(start_date, end_date)
     normalized_type = chart_type.upper()
@@ -212,7 +212,7 @@ def _plot_hydrograph_series(
     timestamps: Sequence[datetime],
     values: Sequence[float | None],
 ) -> None:
-    """Малює тонку гідрологічну криву й чесно позначає внутрішні прогалини."""
+    """Малює гідрологічну криву та позначає внутрішні пропуски даних."""
 
     available_indexes = [
         index for index, value in enumerate(values) if value is not None
@@ -605,7 +605,7 @@ def create_discharge_chart(
     output_path: Path,
     font_path: Path | None = None,
 ) -> ChartResult:
-    """Будує професійний добовий гідрограф витрат води."""
+    """Будує добовий гідрограф витрат води."""
 
     start, end = _parse_period(start_date, end_date)
     rows = query_observations(

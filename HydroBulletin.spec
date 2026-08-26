@@ -17,7 +17,7 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=["tests", "unittest"],
+    excludes=["tests"],
     noarchive=False,
     optimize=0,
 )

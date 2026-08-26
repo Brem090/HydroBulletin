@@ -1,4 +1,4 @@
-"""Відтворювана контрольна перевірка фінального MVP HydroBulletin."""
+"""Відтворювана контрольна перевірка завершеного MVP HydroBulletin."""
 
 from __future__ import annotations
 
@@ -252,7 +252,7 @@ def _assert_control_result(
     if archive["provenance_complete"] != "93/93":
         raise RuntimeError("Ланцюг походження продуктів неповний.")
     if archive["raw_sha256_matches"] != "3/3":
-        raise RuntimeError("Контрольна сума raw-файла не збігається.")
+        raise RuntimeError("Контрольна сума raw-файлу не збігається.")
     if len(product_files) != 6:
         raise RuntimeError(
             f"Очікувалося 6 DOCX/PNG, але знайдено {len(product_files)}."
@@ -327,7 +327,10 @@ def main() -> int:
     parser.add_argument(
         "--work-dir",
         type=Path,
-        help="Нова папка результатів; за замовчуванням створюється у temp.",
+        help=(
+            "Нова папка результатів; за замовчуванням створюється "
+            "у тимчасовому каталозі."
+        ),
     )
     parser.add_argument(
         "--samples",

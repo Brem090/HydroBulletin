@@ -16,6 +16,11 @@ from hydrobulletin.archive import (
     read_product_provenance,
 )
 from hydrobulletin.batch import discover_batch_files, run_batch_import
+from hydrobulletin.bulletins import _format_precipitation
+from hydrobulletin.models import (
+    PRECIPITATION_STATE_NO_RAIN,
+    PRECIPITATION_STATE_TRACE,
+)
 from hydrobulletin.regions import REGIONS
 from hydrobulletin.stations import ALL_STATIONS, METEO_STATIONS, STATIONS_BY_INDEX
 from hydrobulletin.workflow import WorkflowRequest, execute_workflow
@@ -110,6 +115,21 @@ class BulletinWorkflowTests(unittest.TestCase):
             self.assertTrue(result.bulletins[0].output_path.exists())
 
     def test_full_demo_creates_three_traceable_bulletins(self) -> None:
+        self.assertEqual(_format_precipitation(None), "")
+        self.assertEqual(_format_precipitation(0.0), "")
+        self.assertEqual(_format_precipitation(0.4), "0,4")
+        self.assertEqual(_format_precipitation(35.3), "35")
+        self.assertEqual(_format_precipitation(35.5), "36")
+        self.assertEqual(_format_precipitation(35.7), "36")
+        self.assertEqual(
+            _format_precipitation(0.0, PRECIPITATION_STATE_NO_RAIN),
+            "",
+        )
+        self.assertEqual(
+            _format_precipitation(0.0, PRECIPITATION_STATE_TRACE),
+            "0,0",
+        )
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             db_path = root / "archive.sqlite"
@@ -188,6 +208,27 @@ class BulletinWorkflowTests(unittest.TestCase):
                 self.assertNotIn("{{", visible_text)
                 self.assertIn("Тестовий гідролог", visible_text)
                 self.assertIn("станом на 12 липня 2026 року", visible_text)
+                region_title = next(
+                    region.title
+                    for region in REGIONS
+                    if region.key == bulletin.region_key
+                )
+                self.assertEqual(
+                    document.core_properties.title,
+                    (
+                        "Гідрологічний бюлетень: "
+                        f"{region_title}, 12.07.2026"
+                    ),
+                )
+                self.assertEqual(
+                    document.core_properties.author,
+                    "Тестовий гідролог",
+                )
+                self.assertEqual(
+                    document.core_properties.last_modified_by,
+                    "Тестовий гідролог",
+                )
+                self.assertEqual(document.core_properties.language, "uk-UA")
 
                 data_table = official_data_table(document)
                 self.assertEqual(

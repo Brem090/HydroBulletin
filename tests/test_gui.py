@@ -13,7 +13,8 @@ from typing import cast
 from unittest.mock import patch
 
 import main as main_module
-from hydrobulletin import gui
+from hydrobulletin import gui, workflow
+from hydrobulletin.sources import ArchiveDataSource, FallbackDataSource
 from hydrobulletin.workflow import WorkflowResult
 
 
@@ -38,6 +39,7 @@ class GuiContractTests(unittest.TestCase):
         self.assertNotIn("Сектор гідрологічних прогнозів", source)
         self.assertNotIn("Пошук на ГЦСТ", source)
         self.assertNotIn("ttk.Progressbar", source)
+        self.assertNotIn("Підпапки року й місяця", source)
 
     def test_hydrologist_is_filled_automatically(self) -> None:
         self.assertEqual(gui.DEFAULT_HYDROLOGIST, "Євген КОЗИРЄВ")
@@ -51,6 +53,30 @@ class GuiContractTests(unittest.TestCase):
                 "Папка TXT-файлів": "batch",
                 "Архів SQLite": "database",
             },
+        )
+        request = workflow.WorkflowRequest(
+            bulletin_date="24.08.2026",
+            source_mode="auto",
+            message_types=("ZRUR52",),
+            db_path=Path("archive.sqlite"),
+            raw_root=Path("archive/raw"),
+            templates_dir=Path("templates/bulletins"),
+            output_dir=Path("output"),
+            mapping_path=Path("config/precipitation_mapping.json"),
+            local_file=Path("demo_data/regression/12.07.2026_ZRUR52.txt"),
+            meteo_file=Path("demo_data/regression/12.07.2026_SYNOP.txt"),
+        )
+        hydro_source = workflow._auto_hydro_source(request, "ZRUR52", ())
+        meteo_source = workflow._meteo_source(request, ())
+
+        self.assertIsInstance(hydro_source, FallbackDataSource)
+        self.assertIsInstance(meteo_source, FallbackDataSource)
+        self.assertTrue(
+            all(isinstance(item, ArchiveDataSource) for item in hydro_source.sources)
+        )
+        assert isinstance(meteo_source, FallbackDataSource)
+        self.assertTrue(
+            all(isinstance(item, ArchiveDataSource) for item in meteo_source.sources)
         )
 
     def test_gui_batch_mode_uses_a_folder_picker(self) -> None:

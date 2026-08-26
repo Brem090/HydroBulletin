@@ -131,7 +131,7 @@ def _candidate_score(
     message_type: str,
     date_text: str,
 ) -> tuple[int, int, int]:
-    """Оцінює відповідність вмісту даті, не покладаючись на суфікс файла."""
+    """Оцінює відповідність вмісту даті, не покладаючись на суфікс файлу."""
 
     raw_text = LocalFileSource(path).load_text()
     if message_type == "SYNOP":
@@ -1020,7 +1020,7 @@ def validate(
         "scope": {
             "comparable": (
                 "3 Word-бюлетені + гідрологічна карта; цей обсяг порівнюється "
-                "з ручними вимірами користувача."
+                "з ручним робочим процесом."
             ),
             "extended": (
                 "Ті самі 4 матеріали + дводенні графіки рівнів і витрат. "
@@ -1083,8 +1083,8 @@ def validate(
         "extended_products": [str(path) for path in extended_products],
         "three_day_products": [str(path) for path in three_day_products],
         "limitations": [
-            "Час слід наводити лише з цього звіту, запущеного у Windows 10 "
-            "на фактичному комп'ютері дипломника.",
+            "Часові показники використовуються лише після запуску цього "
+            "звіту у Windows 10 на фактичному робочому комп'ютері.",
             "Попередній день 07.08 завантажується до початку кожного заміру, "
             "тому підготовка контрольної бази не входить до автоматичного часу.",
             "Наступний день 09.08 імпортується після формування матеріалів за "
@@ -1168,7 +1168,10 @@ def main() -> int:
     parser.add_argument(
         "--work-dir",
         type=Path,
-        help="Нова папка результатів; типово validation_results/дата-час.",
+        help=(
+            "Нова папка результатів; за замовчуванням "
+            "validation_results/дата-час."
+        ),
     )
     args = parser.parse_args()
     if args.samples < 1:

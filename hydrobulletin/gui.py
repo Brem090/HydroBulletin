@@ -96,7 +96,7 @@ def parse_date(value: str) -> datetime:
 
 
 def message_type_from_file(path: Path) -> str:
-    """Визначає тип повідомлення за назвою локального файла."""
+    """Визначає тип повідомлення за назвою локального файлу."""
 
     filename = Path(path).name.upper()
     for message_type in SUPPORTED_MESSAGE_TYPES:
@@ -937,21 +937,6 @@ class HydroBulletinApp:
             label="Коренева папка",
             variable=self.output_var,
             command=self._choose_output,
-        )
-        tk.Label(
-            output_card,
-            text="Підпапки року й місяця програма створює автоматично.",
-            bg=SUBTLE_CARD,
-            fg="#526B76",
-            font=("Segoe UI", 9),
-            anchor="w",
-        ).grid(
-            row=1,
-            column=1,
-            columnspan=2,
-            sticky="w",
-            padx=(12, 14),
-            pady=(0, 8),
         )
 
     def _update_source_fields(self, _event: Any = None) -> None:

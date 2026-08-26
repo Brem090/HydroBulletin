@@ -59,20 +59,20 @@ _HTML_BLOCK_TAGS = {
 
 
 class DataSourceError(RuntimeError):
-    """Зрозуміла помилка отримання або перевірки джерела даних."""
+    """Помилка джерела даних із повідомленням для користувача."""
 
 
 class TextDataSource(Protocol):
     """Спільний контракт для будь-якого джерела текстового повідомлення."""
 
     def load_text(self) -> str:
-        """Повернути початковий текст повідомлення."""
+        """Повертає початковий текст повідомлення."""
         ...
 
 
 @dataclass(frozen=True)
 class LocalFileSource:
-    """Читає кодоване повідомлення з локального файла."""
+    """Читає кодоване повідомлення з локального файлу."""
 
     path: Path
     encoding: str = "utf-8"
@@ -105,7 +105,7 @@ class OnlineConnection:
 
 @dataclass(frozen=True)
 class OnlineSourceSettings:
-    """Назви змінних середовища для безпечного онлайн-підключення."""
+    """Назви змінних середовища для онлайн-підключення."""
 
     url_variable: str = "HYDRO_SOURCE_URL"
     username_variable: str = "HYDRO_SOURCE_USERNAME"

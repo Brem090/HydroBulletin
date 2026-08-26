@@ -180,8 +180,6 @@ def _auto_hydro_source(
         OnlineDataSource(connection, request.bulletin_date, message_type)
         for connection in connections
     ]
-    if request.local_file is not None:
-        sources.append(LocalFileSource(request.local_file))
     sources.append(
         ArchiveDataSource(
             request.raw_root,
@@ -263,8 +261,6 @@ def _meteo_source(
             for connection in connections
         )
     )
-    if request.meteo_file is not None:
-        sources.append(LocalFileSource(request.meteo_file))
     sources.append(
         ArchiveDataSource(
             request.raw_root,
@@ -392,7 +388,7 @@ def _import_batch_folder(
     if required_types and not imported_types:
         raise FileNotFoundError(
             "У вибраній папці за вказану дату не знайдено жодного "
-            "гідрологічного TXT-файла."
+            "гідрологічного TXT-файлу."
         )
     if missing_types:
         warnings.append(

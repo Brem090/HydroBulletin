@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any, Iterable, Iterator, Mapping, Sequence
 
@@ -24,6 +25,10 @@ from .archive import (
     read_reference_extremes,
     register_product,
     required_database_int,
+)
+from .models import (
+    PRECIPITATION_STATE_NO_RAIN,
+    PRECIPITATION_STATE_TRACE,
 )
 from .quality import (
     CORRECTED,
@@ -85,6 +90,7 @@ class BulletinRow:
     level: float | None
     change: float | None
     precipitation: float | None
+    precipitation_state: str
     water_temperature: float | None
     discharge: float | None
     ice_phenomena: str
@@ -121,12 +127,17 @@ def _format_change(value: float | None) -> str:
     return f"+{text}" if value > 0 else text
 
 
-def _format_precipitation(value: float | None) -> str:
+def _format_precipitation(value: float | None, state: str = "") -> str:
     if value is None:
         return ""
-    if 0.0 <= value < 1.0:
+    if state == PRECIPITATION_STATE_NO_RAIN:
+        return ""
+    if value == 0.0:
+        return "0,0" if state == PRECIPITATION_STATE_TRACE else ""
+    if -1.0 < value < 1.0:
         return f"{value:.1f}".replace(".", ",")
-    return _format_number(value, 1)
+    rounded = Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return str(int(rounded))
 
 
 def _pick_measurement(
@@ -254,6 +265,7 @@ def build_bulletin_rows(
                 level=value("WATER_LEVEL"),
                 change=value("DAILY_CHANGE"),
                 precipitation=value("PRECIPITATION"),
+                precipitation_state=text_value("PRECIPITATION"),
                 water_temperature=value("WATER_TEMPERATURE"),
                 discharge=value("DISCHARGE"),
                 ice_phenomena=text_value("ICE_PHENOMENA"),
@@ -322,7 +334,7 @@ def _iter_paragraphs(doc: DocumentObject) -> Iterator[Paragraph]:
 
 
 def _set_paragraph_text(paragraph: Paragraph, text: str) -> None:
-    """Замінює текст, зберігаючи формат видимого run шаблону."""
+    """Замінює текст без зміни форматування фрагмента шаблону."""
 
     runs = paragraph.runs
     if runs:
@@ -508,7 +520,10 @@ def _fill_official_table(table: Table, rows: Sequence[BulletinRow]) -> None:
         values = {
             1: _format_number(item.level, 1),
             2: _format_change(item.change),
-            3: _format_precipitation(item.precipitation),
+            3: _format_precipitation(
+                item.precipitation,
+                item.precipitation_state,
+            ),
             9: ice_text or _format_number(item.water_temperature, 1),
         }
         for column, value in (
@@ -548,7 +563,10 @@ def _fill_extended_table(table: Table, rows: Sequence[BulletinRow]) -> None:
             item.station_name,
             _format_number(item.level, 1),
             _format_change(item.change),
-            _format_precipitation(item.precipitation),
+            _format_precipitation(
+                item.precipitation,
+                item.precipitation_state,
+            ),
             _ice_text(item) or _format_number(item.water_temperature, 1),
             _format_number(item.discharge, 3),
             QUALITY_DISPLAY.get(item.quality_status, item.quality_status),
@@ -619,6 +637,18 @@ def generate_bulletin(
         )
         _fill_extended_table(table, rows)
 
+    properties = doc.core_properties
+    properties.title = (
+        f"Гідрологічний бюлетень: {region.title}, {bulletin_date}"
+    )
+    properties.subject = "Оперативні гідрологічні дані"
+    properties.author = hydrologist
+    properties.last_modified_by = hydrologist
+    properties.keywords = "HydroBulletin; гідрологічний бюлетень"
+    properties.category = "Службові матеріали"
+    properties.language = "uk-UA"
+    properties.revision = 1
+
     output_path = Path(output_path)
     output_path.parent.mkdir(parents=True, exist_ok=True)
     doc.save(str(output_path))
@@ -673,7 +703,7 @@ def generate_bulletins(
     output_dir: Path,
     precipitation_mapping: Mapping[str, str],
 ) -> tuple[BulletinResult, ...]:
-    """Створює вибрані бюлетені одним універсальним кодом."""
+    """Створює вибрані бюлетені спільним генератором."""
 
     results: list[BulletinResult] = []
     for region in regions:

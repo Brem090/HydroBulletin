@@ -16,7 +16,10 @@ from hydrobulletin.archive import (
     initialize_archive,
     read_observations,
 )
-from hydrobulletin.models import HydroObservation
+from hydrobulletin.models import (
+    PRECIPITATION_STATE_NO_RAIN,
+    HydroObservation,
+)
 from hydrobulletin.pipeline import PipelineResult, run_import_pipeline
 from hydrobulletin.sources import LocalFileSource
 from hydrobulletin.stations import LVIV_STATIONS, STATIONS_BY_INDEX
@@ -230,8 +233,13 @@ class PipelineTests(unittest.TestCase):
                 observed_at=datetime(2026, 7, 19, 8),
                 source_type="online",
                 source_file="raw/2026/07/2026-07-19_ZRUR52.txt",
+                precipitation_mm=0.0,
             )
-            enriched = replace(base, water_temperature_c=20.0)
+            enriched = replace(
+                base,
+                water_temperature_c=20.0,
+                precipitation_state=PRECIPITATION_STATE_NO_RAIN,
+            )
 
             first = import_observations(
                 db_path,
@@ -258,7 +266,16 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue(second.duplicate_file)
             self.assertEqual(second.inserted_observations, 1)
             self.assertEqual(archive_summary(db_path)["imports"], 1)
-            self.assertEqual(archive_summary(db_path)["observations"], 2)
+            self.assertEqual(archive_summary(db_path)["observations"], 3)
+            precipitation = next(
+                row
+                for row in read_observations(db_path)
+                if row["parameter_code"] == "PRECIPITATION"
+            )
+            self.assertEqual(
+                precipitation["text_value"],
+                PRECIPITATION_STATE_NO_RAIN,
+            )
 
     def test_nil_record_is_stored(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:

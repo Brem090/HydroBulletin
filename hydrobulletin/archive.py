@@ -170,7 +170,7 @@ ON products(bulletin_date, region_key);
 
 @dataclass(frozen=True)
 class ImportResult:
-    """Підсумок однієї спроби запису файла до SQLite."""
+    """Підсумок однієї спроби запису файлу до SQLite."""
 
     import_id: int
     duplicate_file: bool
@@ -188,7 +188,7 @@ class ProductResult:
 
 @dataclass(frozen=True)
 class CorrectionResult:
-    """Підсумок створення або скасування аудитовної ручної правки."""
+    """Підсумок створення або скасування контрольованої ручної правки."""
 
     correction_id: int
     observation_id: int
@@ -201,7 +201,7 @@ def _table_columns(connection: sqlite3.Connection, table_name: str) -> set[str]:
 
 
 def _ensure_import_columns(connection: sqlite3.Connection) -> None:
-    """Додає відсутні поля походження файла до старої схеми."""
+    """Додає відсутні поля походження файлу до старої схеми."""
 
     columns = _table_columns(connection, "imports")
     additions = {
@@ -247,10 +247,10 @@ def _ensure_import_columns(connection: sqlite3.Connection) -> None:
 def _remove_previous_source_hash_constraint(
     connection: sqlite3.Connection,
 ) -> None:
-    """Замінює стару унікальність лише за hash на складений ключ імпорту.
+    """Замінює стару унікальність лише за хешем на складений ключ імпорту.
 
     Однаковий текст може надійти в іншу дату або з іншого джерела. У схемі
-    v3 його ідентичність визначає ``source_key``: джерело, тип, дата й hash.
+    v3 його ідентичність визначає ``source_key``: джерело, тип, дата й хеш.
     Вбудований autoindex SQLite не можна видалити окремо, тому таблиця
     ``imports`` перебудовується зі збереженням її ідентифікаторів.
     """
@@ -406,7 +406,7 @@ def _ensure_product_observation_columns(
 
 
 def initialize_archive(db_path: Path, stations: Iterable[Station]) -> Path:
-    """Створює або безпечно оновлює SQLite-базу та довідник постів."""
+    """Створює або оновлює SQLite-базу та довідник постів."""
 
     db_path = Path(db_path)
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -584,6 +584,9 @@ def import_observations(
 
         for observation in observations:
             for measurement in observation_measurements(observation):
+                observed_at_text = measurement.observed_at.isoformat(
+                    timespec="seconds"
+                )
                 cursor = connection.execute(
                     """
                     INSERT OR IGNORE INTO observations(
@@ -594,7 +597,7 @@ def import_observations(
                     """,
                     (
                         measurement.station_index,
-                        measurement.observed_at.isoformat(timespec="seconds"),
+                        observed_at_text,
                         measurement.parameter_code,
                         measurement.value,
                         measurement.text_value,
@@ -611,6 +614,25 @@ def import_observations(
                     inserted += 1
                 else:
                     duplicates += 1
+                    if (
+                        measurement.parameter_code == "PRECIPITATION"
+                        and measurement.text_value
+                    ):
+                        connection.execute(
+                            """
+                            UPDATE observations
+                            SET text_value = ?
+                            WHERE station_index = ?
+                              AND observed_at = ?
+                              AND parameter_code = 'PRECIPITATION'
+                              AND text_value = ''
+                            """,
+                            (
+                                measurement.text_value,
+                                measurement.station_index,
+                                observed_at_text,
+                            ),
+                        )
 
         connection.commit()
         return ImportResult(import_id, duplicate_file, inserted, duplicates)
@@ -648,7 +670,7 @@ def archive_summary(db_path: Path) -> dict[str, int]:
 
 
 def read_observations(db_path: Path) -> list[DatabaseRow]:
-    """Повертає нормалізовані записи для тестів і консольного демо."""
+    """Повертає нормалізовані записи для тестів і консольної демонстрації."""
 
     connection = sqlite3.connect(Path(db_path))
     connection.row_factory = sqlite3.Row

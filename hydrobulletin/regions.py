@@ -11,7 +11,7 @@ from .stations import IF_STATIONS, LEFT_DNISTER_STATIONS, LVIV_STATIONS
 
 @dataclass(frozen=True)
 class RegionConfig:
-    """Описує змінну частину універсального генератора бюлетенів."""
+    """Описує параметри регіонального бюлетеня."""
 
     key: str
     title: str

@@ -6,7 +6,13 @@ import re
 from datetime import datetime, timedelta
 from typing import Iterable, Mapping
 
-from .models import HydroObservation, Station
+from .models import (
+    PRECIPITATION_STATE_MEASURED,
+    PRECIPITATION_STATE_NO_RAIN,
+    PRECIPITATION_STATE_TRACE,
+    HydroObservation,
+    Station,
+)
 
 
 def normalize_token(token: str) -> str:
@@ -429,6 +435,15 @@ def decode_station_record(
 
     precip_group = find_precipitation_group(data_groups)
     precipitation = parse_precipitation(precip_group) if precip_group else None
+    precipitation_state = ""
+    if precip_group is not None and precipitation is not None:
+        precipitation_code = int(precip_group[1:4])
+        if precipitation_code == 990:
+            precipitation_state = PRECIPITATION_STATE_TRACE
+        elif precipitation == 0.0:
+            precipitation_state = PRECIPITATION_STATE_NO_RAIN
+        else:
+            precipitation_state = PRECIPITATION_STATE_MEASURED
 
     quality_status = "OK" if level is not None else "INCOMPLETE"
     return HydroObservation(
@@ -441,6 +456,7 @@ def decode_station_record(
         quality_status=quality_status,
         water_temperature_c=temperature,
         precipitation_mm=precipitation,
+        precipitation_state=precipitation_state,
         discharge_m3_s=discharge,
         ice_phenomena=", ".join(ice_items),
         ice_thickness_cm=ice_thickness,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+from dataclasses import replace
 from datetime import datetime
 
 from hydrobulletin.decoder import (
@@ -13,7 +14,14 @@ from hydrobulletin.decoder import (
     parse_precipitation,
     parse_temperature,
 )
-from hydrobulletin.models import HydroObservation, Station, observation_measurements
+from hydrobulletin.models import (
+    PRECIPITATION_STATE_MEASURED,
+    PRECIPITATION_STATE_NO_RAIN,
+    PRECIPITATION_STATE_TRACE,
+    HydroObservation,
+    Station,
+    observation_measurements,
+)
 
 
 class DischargeTests(unittest.TestCase):
@@ -73,7 +81,54 @@ class PrecipitationTests(unittest.TestCase):
             raw_record="",
             precipitation_mm=0.0,
         )
-        self.assertEqual(observation.precipitation_text, "0,0 мм")
+        self.assertEqual(observation.precipitation_text, "")
+        self.assertEqual(
+            replace(
+                observation,
+                precipitation_state=PRECIPITATION_STATE_TRACE,
+            ).precipitation_text,
+            "0,0 мм",
+        )
+        self.assertEqual(
+            replace(
+                observation,
+                precipitation_state=PRECIPITATION_STATE_NO_RAIN,
+            ).precipitation_text,
+            "",
+        )
+        self.assertEqual(
+            replace(
+                observation,
+                precipitation_mm=35.3,
+                precipitation_state=PRECIPITATION_STATE_MEASURED,
+            ).precipitation_text,
+            "35 мм",
+        )
+        self.assertEqual(
+            replace(
+                observation,
+                precipitation_mm=35.7,
+                precipitation_state=PRECIPITATION_STATE_MEASURED,
+            ).precipitation_text,
+            "36 мм",
+        )
+
+        station = Station("81017", "Дністер — Самбір")
+        trace = decode_station_record(
+            "81017 12081 10100 09901",
+            station,
+            bulletin_date="12.07.2026",
+        )
+        no_rain = decode_station_record(
+            "81017 12081 10100 00001",
+            station,
+            bulletin_date="12.07.2026",
+        )
+        self.assertEqual(trace.precipitation_state, PRECIPITATION_STATE_TRACE)
+        self.assertEqual(
+            no_rain.precipitation_state,
+            PRECIPITATION_STATE_NO_RAIN,
+        )
 
     def test_missing_and_invalid_values(self) -> None:
         self.assertIsNone(parse_precipitation("00000"))

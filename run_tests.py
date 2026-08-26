@@ -20,7 +20,7 @@ GROUP_LABELS = {
     "test_gui": "Інтерфейс і масштабування",
     "test_output_paths": "Календарна структура матеріалів",
     "test_operational_validation": "Повний експлуатаційний сценарій",
-    "test_runtime": "Windows-шляхи та запускні файли",
+    "test_runtime": "Windows-шляхи та файли запуску",
     "test_bulletin_workflow": "Пакетний імпорт і Word-бюлетені",
     "test_visual_products": "Карта, графіки та походження даних",
     "test_product_workflow": "Бюлетені, карта й графіки наскрізно",
