@@ -1,4 +1,4 @@
-"""Відтворювана контрольна перевірка завершеного MVP HydroBulletin."""
+"""Перевірка імпорту та матеріалів HydroBulletin на синтетичних даних."""
 
 from __future__ import annotations
 

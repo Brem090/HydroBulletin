@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
+import numpy as np
+from matplotlib import dates as mdates
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.figure import Figure
 from PIL import Image
@@ -24,8 +26,10 @@ from hydrobulletin.charts import (
     DISCHARGE_CHART,
     LEVEL_CHART,
     _configure_axes,
+    _configure_y_axis,
     _font_properties,
     _regular_series,
+    _save_figure,
     chart_output_name,
     create_discharge_chart,
     create_level_chart,
@@ -241,14 +245,29 @@ class VisualProductTests(unittest.TestCase):
             db_path = create_test_archive(root)
             output_path = root / "levels.png"
 
-            result = create_level_chart(
-                db_path,
-                station_index="81015",
-                start_date="01.07.2026",
-                end_date="03.07.2026",
-                output_path=output_path,
-                font_path=FONT_PATH,
-            )
+            def inspect_figure(figure: Figure, path: Path, title: str) -> None:
+                axes = figure.axes[0]
+                last_observed = float(mdates.date2num(datetime(2026, 7, 3, 8)))
+                missing_evening = float(mdates.date2num(datetime(2026, 7, 3, 20)))
+                self.assertEqual(axes.get_xticks()[-1], last_observed)
+                self.assertLess(axes.get_xlim()[1], missing_evening)
+                self.assertGreater(axes.get_xlim()[1], last_observed)
+                self.assertTrue(
+                    any(line.get_linestyle() == "--" for line in axes.lines)
+                )
+                _save_figure(figure, path, title)
+
+            with patch(
+                "hydrobulletin.charts._save_figure", side_effect=inspect_figure
+            ):
+                result = create_level_chart(
+                    db_path,
+                    station_index="81015",
+                    start_date="01.07.2026",
+                    end_date="03.07.2026",
+                    output_path=output_path,
+                    font_path=FONT_PATH,
+                )
 
             self.assertEqual(result.available_points, 4)
             self.assertEqual(result.missing_points, 2)
@@ -282,6 +301,97 @@ class VisualProductTests(unittest.TestCase):
             self.assertEqual(len(labels), len(set(labels)))
             self.assertTrue(any("08:00" in label for label in labels))
             self.assertTrue(any("20:00" in label for label in labels))
+
+    def test_level_chart_keeps_a_zero_evening_observation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = create_test_archive(root)
+            add_observation(
+                db_path,
+                bulletin_date="04.07.2026",
+                raw_text="day-4",
+                observation=HydroObservation(
+                    index="81015",
+                    station_name="Дністер — Стрілки",
+                    level=105,
+                    change=0,
+                    evening_level=0,
+                    raw_record="day-4",
+                    observed_at=datetime(2026, 7, 4, 8),
+                    evening_observed_at=datetime(2026, 7, 3, 20),
+                    source_file="raw/2026/07/day-4.txt",
+                ),
+            )
+
+            def inspect_figure(figure: Figure, _path: Path, _title: str) -> None:
+                axes = figure.axes[0]
+                evening = float(mdates.date2num(datetime(2026, 7, 3, 20)))
+                self.assertEqual(axes.get_xticks()[-1], evening)
+                self.assertTrue(
+                    any(0.0 in np.asarray(line.get_ydata()) for line in axes.lines)
+                )
+
+            with patch(
+                "hydrobulletin.charts._save_figure", side_effect=inspect_figure
+            ):
+                result = create_level_chart(
+                    db_path,
+                    station_index="81015",
+                    start_date="01.07.2026",
+                    end_date="03.07.2026",
+                    output_path=root / "levels.png",
+                    font_path=FONT_PATH,
+                )
+            self.assertEqual(result.available_points, 5)
+            self.assertEqual(result.missing_points, 1)
+            self.assertEqual(result.product.linked_observations, 5)
+
+    def test_single_zero_level_shows_its_observation_time(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            db_path = root / "archive.sqlite"
+            initialize_archive(db_path, LVIV_STATIONS)
+            add_observation(
+                db_path,
+                bulletin_date="03.07.2026",
+                raw_text="zero-level",
+                observation=HydroObservation(
+                    index="81015",
+                    station_name="Дністер — Стрілки",
+                    level=0,
+                    change=0,
+                    evening_level=None,
+                    raw_record="zero-level",
+                    observed_at=datetime(2026, 7, 3, 8),
+                    source_file="raw/2026/07/zero-level.txt",
+                ),
+            )
+
+            def inspect_figure(figure: Figure, _path: Path, _title: str) -> None:
+                FigureCanvasAgg(figure).draw()
+                axes = figure.axes[0]
+                self.assertEqual(
+                    [label.get_text() for label in axes.get_xticklabels()],
+                    ["03.07\n08:00"],
+                )
+                self.assertLess(
+                    axes.get_xlim()[1],
+                    float(mdates.date2num(datetime(2026, 7, 3, 20))),
+                )
+
+            with patch(
+                "hydrobulletin.charts._save_figure", side_effect=inspect_figure
+            ):
+                result = create_level_chart(
+                    db_path,
+                    station_index="81015",
+                    start_date="03.07.2026",
+                    end_date="03.07.2026",
+                    output_path=root / "levels.png",
+                    font_path=FONT_PATH,
+                )
+            self.assertEqual(result.available_points, 1)
+            self.assertEqual(result.missing_points, 1)
 
     def test_chart_legend_is_outside_plot_area(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -326,20 +436,60 @@ class VisualProductTests(unittest.TestCase):
             db_path = create_test_archive(root)
             output_path = root / "discharge.png"
 
-            result = create_discharge_chart(
-                db_path,
-                station_index="81015",
-                start_date="01.07.2026",
-                end_date="03.07.2026",
-                output_path=output_path,
-                font_path=FONT_PATH,
-            )
+            def inspect_figure(figure: Figure, path: Path, title: str) -> None:
+                lower, upper = figure.axes[0].get_ylim()
+                self.assertGreater(lower, 0)
+                self.assertLess(lower, 1.2)
+                self.assertGreater(upper, 1.6)
+                self.assertAlmostEqual(1.2 - lower, upper - 1.6)
+                _save_figure(figure, path, title)
+
+            with patch(
+                "hydrobulletin.charts._save_figure", side_effect=inspect_figure
+            ):
+                result = create_discharge_chart(
+                    db_path,
+                    station_index="81015",
+                    start_date="01.07.2026",
+                    end_date="03.07.2026",
+                    output_path=output_path,
+                    font_path=FONT_PATH,
+                )
 
             self.assertEqual(result.available_points, 2)
             self.assertEqual(result.missing_points, 1)
             self.assertEqual(result.flagged_points, 1)
             self.assertEqual(result.product.linked_observations, 2)
             self.assertTrue(output_path.exists())
+
+    def test_discharge_axis_preserves_zero_constant_and_negative_values(self) -> None:
+        cases = (
+            (0.55, None, 0.65, 0.85),
+            (0.0, 0.65),
+            (0.0,),
+            (1.2, 1.2),
+            (0.001, 0.002),
+            (-0.2, 0.65),
+            (-0.2, -0.2),
+        )
+        for values in cases:
+            with self.subTest(values=values):
+                axes = Figure().subplots()
+                _configure_y_axis(
+                    axes, values, nonnegative=True, integer_ticks=False
+                )
+                lower, upper = axes.get_ylim()
+                observed = [value for value in values if value is not None]
+                self.assertLessEqual(lower, min(observed))
+                self.assertGreater(upper, max(observed))
+                self.assertGreater(upper, lower)
+                if min(observed) >= 0:
+                    self.assertGreaterEqual(lower, 0)
+                else:
+                    self.assertLess(lower, min(observed))
+                if min(observed) > 0:
+                    self.assertGreater(lower, 0)
+                    self.assertAlmostEqual(min(observed) - lower, upper - max(observed))
 
     def test_invalid_chart_period_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "Початкова дата"):

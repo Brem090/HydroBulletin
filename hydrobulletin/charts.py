@@ -278,7 +278,7 @@ def _configure_y_axis(
     axes: Axes,
     values: Iterable[float | None],
     *,
-    include_zero: bool,
+    nonnegative: bool,
     integer_ticks: bool,
 ) -> None:
     available = _available_values(values)
@@ -288,9 +288,13 @@ def _configure_y_axis(
     margin = max(
         span * 0.08,
         abs(maximum) * 0.025,
-        1.0 if integer_ticks else 0.02,
+        1.0 if integer_ticks else 0.0,
     )
-    lower = 0.0 if include_zero and minimum >= 0 else minimum - margin
+    if margin == 0:
+        margin = 0.02
+    lower = minimum - margin
+    if nonnegative and minimum >= 0:
+        lower = max(0.0, lower)
     upper = maximum + margin
     if lower == upper:
         upper = lower + (1.0 if integer_ticks else 0.1)
@@ -333,6 +337,7 @@ def _configure_axes(
     end: datetime,
     timestamps: Sequence[datetime],
     font: FontProperties,
+    show_hours: bool = False,
 ) -> None:
     figure.suptitle(
         title,
@@ -364,6 +369,7 @@ def _configure_axes(
     for side in ("left", "bottom"):
         axes.spines[side].set_color("#8C969B")
         axes.spines[side].set_linewidth(0.75)
+        axes.spines[side].set_zorder(0)
 
     duration_days = (end - start).days + 1
     short_period = duration_days <= 7
@@ -375,7 +381,9 @@ def _configure_axes(
             tick_times.append(timestamps[-1])
         axes.set_xticks(_date_numbers(tick_times))
         has_multiple_hours = len({value.hour for value in timestamps}) > 1
-        date_format = "%d.%m\n%H:%M" if has_multiple_hours else "%d.%m"
+        date_format = (
+            "%d.%m\n%H:%M" if show_hours or has_multiple_hours else "%d.%m"
+        )
         axes.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
     else:
         locator = mdates.AutoDateLocator(
@@ -399,8 +407,9 @@ def _configure_axes(
     axis_start = timestamps[0]
     axis_end = timestamps[-1]
     if axis_start == axis_end:
-        left_limit = axis_start - timedelta(hours=12)
-        right_limit = axis_end + timedelta(hours=12)
+        padding = timedelta(hours=1 if show_hours else 12)
+        left_limit = axis_start - padding
+        right_limit = axis_end + padding
     else:
         padding = max(
             timedelta(hours=1),
@@ -542,6 +551,9 @@ def create_level_chart(
     station_name = str(used_rows[0]["station_name"])
     timestamps, values = _regular_series(used_rows, start, end, (8, 20))
     _available_values(values)
+    last_observed = max(
+        index for index, value in enumerate(values) if value is not None
+    )
 
     font = _font_properties(font_path)
     figure = Figure(figsize=(11.5, 6.3), dpi=150)
@@ -551,7 +563,7 @@ def create_level_chart(
     _configure_y_axis(
         axes,
         values,
-        include_zero=False,
+        nonnegative=False,
         integer_ticks=True,
     )
     title = f"Хід рівнів води: {station_name} ({station_index})"
@@ -563,8 +575,9 @@ def create_level_chart(
         y_label="Рівень води, см над нулем поста",
         start=start,
         end=end,
-        timestamps=timestamps,
+        timestamps=timestamps[:last_observed + 1],
         font=font,
+        show_hours=True,
     )
     _deduplicated_legend(figure, axes, font)
     output_path = Path(output_path)
@@ -638,7 +651,7 @@ def create_discharge_chart(
     _configure_y_axis(
         axes,
         values,
-        include_zero=True,
+        nonnegative=True,
         integer_ticks=False,
     )
     title = f"Гідрограф витрат води: {station_name} ({station_index})"

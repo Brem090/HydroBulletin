@@ -93,7 +93,7 @@ class LocalFileSource:
 
 @dataclass(frozen=True)
 class OnlineConnection:
-    """Перевірені значення підключення без збереження їх у коді."""
+    """Адреса, облікові дані та параметри повторення онлайн-запиту."""
 
     base_url: str
     username: str

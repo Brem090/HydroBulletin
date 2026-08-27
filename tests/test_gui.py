@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import cast
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import main as main_module
 from hydrobulletin import gui, workflow
@@ -134,6 +134,84 @@ class GuiContractTests(unittest.TestCase):
         self.assertIn("Графік ходу рівнів води", source)
         self.assertIn("Графік витрат води", source)
         self.assertNotIn("ручн", source.lower())
+
+    def test_closed_combobox_wheel_scrolls_the_form(self) -> None:
+        app = object.__new__(gui.HydroBulletinApp)
+        app.root = Mock(spec=gui.tk.Tk)
+        app.main_canvas = Mock(spec=gui.tk.Canvas)
+        combo = Mock(spec=gui.ttk.Combobox)
+        combo.winfo_toplevel.return_value = app.root
+        combo.instate.return_value = False
+        with patch.object(gui.ttk, "Combobox", return_value=combo):
+            app._make_combobox(
+                app.root,
+                Mock(spec=gui.tk.StringVar),
+                tuple(gui.SOURCE_LABELS),
+                width=38,
+            )
+
+        callbacks = {
+            call.args[0]: call.args[1] for call in combo.bind.call_args_list
+        }
+        cases = (
+            ("<MouseWheel>", 120, None, -1),
+            ("<MouseWheel>", -120, None, 1),
+            ("<MouseWheel>", 30, None, -1),
+            ("<MouseWheel>", -30, None, 1),
+            ("<MouseWheel>", -1200, None, 4),
+            ("<MouseWheel>", 0, None, 0),
+            ("<Button-4>", 0, 4, -1),
+            ("<Button-5>", 0, 5, 1),
+        )
+        for event_name, delta, num, units in cases:
+            with self.subTest(event=event_name, delta=delta):
+                app.main_canvas.reset_mock()
+                event = SimpleNamespace(widget=combo, delta=delta, num=num)
+                self.assertEqual(callbacks[event_name](event), "break")
+                if units:
+                    app.main_canvas.yview_scroll.assert_called_once_with(
+                        units, "units"
+                    )
+                else:
+                    app.main_canvas.yview_scroll.assert_not_called()
+
+    def test_open_dropdown_and_other_windows_keep_native_scrolling(self) -> None:
+        app = object.__new__(gui.HydroBulletinApp)
+        app.root = Mock(spec=gui.tk.Tk)
+        app.main_canvas = Mock(spec=gui.tk.Canvas)
+        combo = Mock(spec=gui.ttk.Combobox)
+        combo.winfo_toplevel.return_value = app.root
+        combo.instate.return_value = True
+        other_window = Mock(spec=gui.tk.Listbox)
+        other_window.winfo_toplevel.return_value = Mock(spec=gui.tk.Toplevel)
+
+        for widget in (combo, other_window, ".!combobox.popdown.f.l"):
+            with self.subTest(widget=widget):
+                event = SimpleNamespace(widget=widget, delta=120)
+                self.assertIsNone(app._on_mousewheel(event))
+        app.main_canvas.yview_scroll.assert_not_called()
+
+    def test_chart_dates_wrap_only_when_needed(self) -> None:
+        app = object.__new__(gui.HydroBulletinApp)
+        app.chart_start_group = Mock(spec=gui.tk.Frame)
+        app.chart_end_group = Mock(spec=gui.tk.Frame)
+        app.chart_start_group.winfo_reqwidth.return_value = 290
+        app.chart_end_group.winfo_reqwidth.return_value = 285
+        app._chart_period_columns = 1
+
+        app._layout_chart_period(SimpleNamespace(width=590))
+        app.chart_end_group.grid_configure.assert_not_called()
+        app._layout_chart_period(SimpleNamespace(width=591))
+        app.chart_end_group.grid_configure.assert_called_once_with(
+            row=0, column=1, padx=(16, 0)
+        )
+        app.chart_end_group.reset_mock()
+        app._layout_chart_period(SimpleNamespace(width=800))
+        app.chart_end_group.grid_configure.assert_not_called()
+        app._layout_chart_period(SimpleNamespace(width=590))
+        app.chart_end_group.grid_configure.assert_called_once_with(
+            row=1, column=0, padx=0
+        )
 
     def test_operational_tools_are_separate_from_product_selection(self) -> None:
         source = inspect.getsource(

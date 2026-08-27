@@ -43,7 +43,7 @@ def run_import_pipeline(
     source_name: str,
     apply_quality_control: bool = True,
 ) -> PipelineResult:
-    """Виконує один атомарний сценарій імпорту кодованого повідомлення."""
+    """Отримує повідомлення, зберігає raw-файл і записує вимірювання."""
 
     raw_text = source.load_text()
     if not raw_text.strip():

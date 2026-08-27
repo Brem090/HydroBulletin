@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from hydrobulletin.runtime import RuntimePaths, resolve_runtime_paths
 
@@ -39,8 +40,8 @@ class RuntimePathTests(unittest.TestCase):
         self.assertEqual(result, RuntimePaths(project_root, project_root))
 
     def test_frozen_run_keeps_writable_data_beside_executable(self) -> None:
-        bundle_root = Path("test-runtime/bundle").resolve()
         release_root = Path("test-runtime/release/HydroBulletin").resolve()
+        bundle_root = release_root / "_internal"
         result = resolve_runtime_paths(
             bundle_root / "launcher.py",
             frozen=True,
@@ -50,6 +51,16 @@ class RuntimePathTests(unittest.TestCase):
 
         self.assertEqual(result.resource_root, bundle_root)
         self.assertEqual(result.data_root, release_root)
+
+        with patch(
+            "hydrobulletin.runtime.sys._MEIPASS", str(bundle_root), create=True
+        ):
+            detected = resolve_runtime_paths(
+                bundle_root / "launcher.py",
+                frozen=True,
+                executable=release_root / "HydroBulletin.exe",
+            )
+        self.assertEqual(detected, result)
 
 
 class WindowsLauncherTests(unittest.TestCase):

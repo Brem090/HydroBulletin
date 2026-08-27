@@ -3,8 +3,12 @@ __pycache__/
 .venv/
 venv/
 .env
+.env.*
+!.env.example
 *.sqlite
 *.sqlite3
+*.sqlite-*
+*.sqlite3-*
 archive/raw/**/*.txt
 artifacts/
 output/
@@ -14,5 +18,6 @@ validation_results/
 demo_data/full_private/
 dist/
 build/
+_internal/
 *.spec
 !HydroBulletin.spec

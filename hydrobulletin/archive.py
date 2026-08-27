@@ -17,13 +17,12 @@ from .models import HydroObservation, Station, observation_measurements
 SCHEMA_VERSION = "4"
 
 # Значення, які SQLite приймає як параметри й повертає в рядках запиту.
-# Окремий тип не дає статичному аналізатору втрачати інформацію до ``object``.
 DatabaseValue: TypeAlias = str | int | float | bytes | None
 DatabaseRow: TypeAlias = dict[str, DatabaseValue]
 
 
 def database_float(value: DatabaseValue) -> float | None:
-    """Безпечно перетворює необов'язкове значення SQLite на ``float``."""
+    """Перетворює значення SQLite на ``float``, зберігаючи ``None``."""
 
     if value is None:
         return None
@@ -31,7 +30,7 @@ def database_float(value: DatabaseValue) -> float | None:
 
 
 def database_int(value: DatabaseValue) -> int | None:
-    """Безпечно перетворює необов'язкове значення SQLite на ``int``."""
+    """Перетворює значення SQLite на ``int``, зберігаючи ``None``."""
 
     if value is None:
         return None
@@ -39,7 +38,7 @@ def database_int(value: DatabaseValue) -> int | None:
 
 
 def required_database_int(value: DatabaseValue, field_name: str) -> int:
-    """Повертає обов'язковий цілий і явно відхиляє пошкоджений рядок."""
+    """Читає ціле значення та відхиляє відсутнє обов'язкове поле."""
 
     converted = database_int(value)
     if converted is None:
@@ -300,7 +299,7 @@ def _remove_previous_source_hash_constraint(
 
 
 def _ensure_observations_schema(connection: sqlite3.Connection) -> None:
-    """Створює схему v2 або переносить дані зі схеми v1."""
+    """Оновлює таблицю спостережень і переносить записи старої схеми."""
 
     columns = _table_columns(connection, "observations")
     if not columns:

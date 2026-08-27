@@ -51,6 +51,7 @@ TEXT_DARK = "#16323F"
 SUBTLE_CARD = "#F4FAFC"
 CARD_BORDER = "#BFDDE8"
 RUN_BUTTON_TEXT = "✓ Створити вибрані матеріали"
+MOUSEWHEEL_EVENTS = ("<MouseWheel>", "<Button-4>", "<Button-5>")
 
 SOURCE_LABELS = {
     "Автоматично": "auto",
@@ -380,6 +381,27 @@ class HydroBulletinApp:
         style = ttk.Style(self.root)
         style.configure("Hydro.TCombobox", font=("Segoe UI", 10))
 
+    def _make_combobox(
+        self,
+        parent: tk.Misc,
+        variable: tk.StringVar,
+        values: tuple[str, ...],
+        *,
+        width: int,
+    ) -> ttk.Combobox:
+        combo = ttk.Combobox(
+            parent,
+            textvariable=variable,
+            values=values,
+            state="readonly",
+            style="Hydro.TCombobox",
+            width=width,
+        )
+        # Прокручування закритого списку не повинно змінювати вибір.
+        for event_name in MOUSEWHEEL_EVENTS:
+            combo.bind(event_name, self._on_mousewheel)
+        return combo
+
     def make_button(
         self,
         parent: tk.Misc,
@@ -432,7 +454,15 @@ class HydroBulletinApp:
             fg="white",
             font=("Segoe UI", 18, "bold"),
         )
-        self.header_title_label.pack(anchor="w")
+        self.header_title_label.pack(side=tk.LEFT, anchor="w")
+
+        tk.Label(
+            title_wrap,
+            text="Автор: Євгеній Козирєв",
+            bg=BLUE_DARK,
+            fg="#D9E7F5",
+            font=("Segoe UI", 9),
+        ).pack(side=tk.RIGHT, anchor="e")
 
         main_area = tk.Frame(self.root, bg=BG_MAIN)
         main_area.pack(fill="both", expand=True)
@@ -465,7 +495,8 @@ class HydroBulletinApp:
             "<Configure>",
             self._resize_scroll_content,
         )
-        self.root.bind_all("<MouseWheel>", self._on_mousewheel)
+        for event_name in MOUSEWHEEL_EVENTS:
+            self.root.bind_all(event_name, self._on_mousewheel)
 
         self.card = tk.Frame(
             self.scroll_content,
@@ -683,47 +714,64 @@ class HydroBulletinApp:
         )
 
         self._source_label(self.chart_fields_frame, "Гідропост", 0)
-        self.chart_station_combo = ttk.Combobox(
+        self.chart_station_combo = self._make_combobox(
             self.chart_fields_frame,
-            textvariable=self.chart_station_var,
+            variable=self.chart_station_var,
             values=tuple(CHART_STATION_LABELS),
-            state="readonly",
-            style="Hydro.TCombobox",
+            width=52,
         )
         self.chart_station_combo.grid(
             row=0,
             column=1,
             columnspan=2,
-            sticky="ew",
+            sticky="w",
             padx=(12, 14),
             pady=(10, 5),
         )
 
-        def add_date_row(
-            row: int,
+        self._source_label(self.chart_fields_frame, "Період", 1)
+        self.chart_period_frame = tk.Frame(
+            self.chart_fields_frame,
+            bg="#E9F4F8",
+        )
+        self.chart_period_frame.grid(
+            row=1,
+            column=1,
+            columnspan=2,
+            sticky="ew",
+            padx=(12, 14),
+            pady=(0, 5),
+        )
+
+        def date_group(
             label: str,
             variable: tk.StringVar,
-        ) -> None:
-            self._source_label(self.chart_fields_frame, label, row)
+        ) -> tk.Frame:
+            group = tk.Frame(self.chart_period_frame, bg="#E9F4F8")
+            tk.Label(
+                group,
+                text=label,
+                bg="#E9F4F8",
+                fg=TEXT_DARK,
+                font=("Segoe UI", 10),
+            ).pack(side=tk.LEFT, padx=(0, 8))
             entry = tk.Entry(
-                self.chart_fields_frame,
+                group,
                 textvariable=variable,
-                width=16,
+                width=12,
                 font=("Segoe UI", 10),
                 relief="solid",
                 bd=1,
                 justify="center",
             )
-            entry.grid(
-                row=row,
-                column=1,
-                sticky="ew",
-                padx=(12, 8),
+            entry.pack(
+                side=tk.LEFT,
+                padx=(0, 6),
                 pady=5,
                 ipady=4,
             )
             tk.Button(
-                self.chart_fields_frame,
+                group,
                 text="Календар…",
                 command=lambda: self.open_calendar(variable),
                 bg="#D1EAF4",
@@ -735,18 +783,32 @@ class HydroBulletinApp:
                 font=("Segoe UI", 9, "bold"),
                 padx=10,
                 pady=4,
-                width=12,
-            ).grid(
-                row=row,
-                column=2,
-                sticky="e",
-                padx=(0, 14),
-                pady=5,
-            )
+            ).pack(side=tk.LEFT, pady=5)
+            return group
 
-        add_date_row(1, "Початок періоду", self.chart_start_var)
-        add_date_row(2, "Кінець періоду", self.chart_end_var)
+        self.chart_start_group = date_group("Початок", self.chart_start_var)
+        self.chart_end_group = date_group("Кінець", self.chart_end_var)
+        self.chart_start_group.grid(row=0, column=0, sticky="w")
+        self.chart_end_group.grid(row=1, column=0, sticky="w")
+        self._chart_period_columns = 1
+        self.chart_period_frame.bind("<Configure>", self._layout_chart_period)
         self._update_chart_fields()
+
+    def _layout_chart_period(self, event: Any) -> None:
+        required_width = (
+            self.chart_start_group.winfo_reqwidth()
+            + self.chart_end_group.winfo_reqwidth()
+            + 16
+        )
+        columns = 2 if event.width >= required_width else 1
+        if columns == self._chart_period_columns:
+            return
+        self._chart_period_columns = columns
+        self.chart_end_group.grid_configure(
+            row=0 if columns == 2 else 1,
+            column=1 if columns == 2 else 0,
+            padx=(16, 0) if columns == 2 else 0,
+        )
 
     def _build_source_section(self) -> None:
         section = tk.Frame(self.card, bg=BG_CARD)
@@ -770,18 +832,17 @@ class HydroBulletinApp:
         source_card.columnconfigure(1, weight=1)
 
         self._source_label(source_card, "Спосіб отримання", 0)
-        self.source_combo = ttk.Combobox(
+        self.source_combo = self._make_combobox(
             source_card,
-            textvariable=self.source_var,
+            variable=self.source_var,
             values=tuple(SOURCE_LABELS),
-            state="readonly",
-            style="Hydro.TCombobox",
+            width=38,
         )
         self.source_combo.grid(
             row=0,
             column=1,
             columnspan=2,
-            sticky="ew",
+            sticky="w",
             padx=(12, 14),
             pady=(12, 5),
         )
@@ -803,18 +864,17 @@ class HydroBulletinApp:
         )
 
         self._source_label(self.gcst_frame, "Сервер ГЦСТ", 0)
-        self.gcst_source_combo = ttk.Combobox(
+        self.gcst_source_combo = self._make_combobox(
             self.gcst_frame,
-            textvariable=self.gcst_source_var,
+            variable=self.gcst_source_var,
             values=tuple(GCST_LABEL_TO_MODE),
-            state="readonly",
-            style="Hydro.TCombobox",
+            width=38,
         )
         self.gcst_source_combo.grid(
             row=0,
             column=1,
             columnspan=2,
-            sticky="ew",
+            sticky="w",
             padx=(12, 14),
             pady=(12, 5),
         )
@@ -1162,15 +1222,20 @@ class HydroBulletinApp:
     def _mousewheel_units(event: Any) -> int:
         delta = getattr(event, "delta", 0)
         if not delta:
-            return 0
+            return {4: -1, 5: 1}.get(getattr(event, "num", 0), 0)
         units = int(-delta / 120)
         if units == 0:
             units = -1 if delta > 0 else 1
         return max(-4, min(4, units))
 
     def _on_mousewheel(self, event: Any) -> str | None:
+        widget = event.widget
+        if not isinstance(widget, tk.Misc):
+            return None
         try:
-            if event.widget.winfo_toplevel() is not self.root:
+            if widget.winfo_toplevel() is not self.root:
+                return None
+            if isinstance(widget, ttk.Combobox) and widget.instate(("pressed",)):
                 return None
         except tk.TclError:
             return None
