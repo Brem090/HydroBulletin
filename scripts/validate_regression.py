@@ -9,15 +9,25 @@ import sqlite3
 import statistics
 import subprocess
 import sys
-import tempfile
 import time
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 from typing import Any
 
+from docx import Document
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+if str(PROJECT_DIR) not in sys.path:
+    sys.path.insert(0, str(PROJECT_DIR))
+
+from hydrobulletin.bulletins import build_bulletin_rows
+from hydrobulletin.regions import REGIONS
+
 DEMO_DIR = PROJECT_DIR / "demo_data" / "regression"
+PRECIPITATION_MAPPING_PATH = PROJECT_DIR / "config" / "precipitation_mapping.json"
 DATE_TEXT = "12.07.2026"
+EXPECTED_WORD_FIELDS = 501
 EXPECTED_COUNTS = {
     "stations": 81,
     "imports": 3,
@@ -120,6 +130,209 @@ def _product_files(output_root: Path) -> list[Path]:
         if path.is_file() and path.suffix.lower() in {".docx", ".png"}
     )
 
+
+
+def _format_number(value: float | int | None, digits: int = 1) -> str:
+    if value is None:
+        return ""
+    numeric = float(value)
+    if numeric.is_integer():
+        return str(int(numeric))
+    return f"{numeric:.{digits}f}".rstrip("0").rstrip(".").replace(".", ",")
+
+
+def _format_change(value: float | None) -> str:
+    if value is None:
+        return ""
+    text = _format_number(value, 1)
+    return f"+{text}" if value > 0 else text
+
+
+def _format_precipitation(value: float | None, state: str) -> str:
+    if value is None:
+        return ""
+    if state == "NO_RAIN":
+        return ""
+    if value == 0.0:
+        return "0,0" if state == "TRACE" else ""
+    if -1.0 < value < 1.0:
+        return f"{value:.1f}".replace(".", ",")
+    rounded = Decimal(str(value)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+    return str(int(rounded))
+
+
+def _format_ice_and_temperature(item: Any) -> str:
+    parts: list[str] = []
+    if item.ice_phenomena:
+        parts.append(str(item.ice_phenomena))
+    if item.ice_thickness is not None:
+        parts.append(f"{_format_number(item.ice_thickness, 1)} см")
+    if parts:
+        return ", ".join(parts)
+    return _format_number(item.water_temperature, 1)
+
+
+def _normalize_cell_text(text: str) -> str:
+    return " ".join(text.replace("\xa0", " ").split())
+
+
+def _load_precipitation_mapping() -> dict[str, str]:
+    try:
+        payload = json.loads(PRECIPITATION_MAPPING_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"Не вдалося прочитати карту SYNOP-опадів: {PRECIPITATION_MAPPING_PATH}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError("Карта SYNOP-опадів має містити JSON-об'єкт.")
+    return {str(key): str(value) for key, value in payload.items()}
+
+
+def _iter_tables(container: Any):
+    seen_tables: set[object] = set()
+
+    def walk(owner: Any):
+        for table in owner.tables:
+            table_key = table._tbl
+            if table_key in seen_tables:
+                continue
+            seen_tables.add(table_key)
+            yield table
+
+            seen_cells: set[object] = set()
+            for row in table.rows:
+                for cell in row.cells:
+                    cell_key = cell._tc
+                    if cell_key in seen_cells:
+                        continue
+                    seen_cells.add(cell_key)
+                    yield from walk(cell)
+
+    yield from walk(container)
+
+
+def _find_official_bulletin_table(document: Any) -> Any:
+    for table in _iter_tables(document):
+        if not table.rows or len(table.columns) < 10:
+            continue
+        header = _normalize_cell_text(table.rows[0].cells[0].text)
+        if "Річка-пункт" in header:
+            return table
+    raise RuntimeError("У сформованому DOCX не знайдено офіційної таблиці бюлетеня.")
+
+
+def _verify_word_fields(
+    db_path: Path,
+    product_files: list[Path],
+) -> dict[str, Any]:
+    """Звіряє 501 змінне поле трьох Word-бюлетенів із даними SQLite."""
+
+    docx_files = {
+        path.name: path
+        for path in product_files
+        if path.suffix.lower() == ".docx"
+    }
+    precipitation_mapping = _load_precipitation_mapping()
+
+    checked = 0
+    matched = 0
+    mismatches: list[dict[str, Any]] = []
+    by_region: dict[str, dict[str, int]] = {}
+
+    for region in REGIONS:
+        expected_name = region.output_name(DATE_TEXT)
+        path = docx_files.get(expected_name)
+        if path is None:
+            raise RuntimeError(f"Не знайдено контрольний Word-бюлетень: {expected_name}")
+
+        rows = build_bulletin_rows(
+            db_path,
+            region,
+            DATE_TEXT,
+            precipitation_mapping,
+        )
+        document = Document(str(path))
+        table = _find_official_bulletin_table(document)
+        expected_row_count = len(rows) + 2
+        if len(table.rows) != expected_row_count:
+            raise RuntimeError(
+                f"{path.name}: очікується {expected_row_count} рядків таблиці, "
+                f"отримано {len(table.rows)}."
+            )
+
+        region_checked = 0
+        region_matched = 0
+
+        for position, item in enumerate(rows, start=2):
+            target = table.rows[position]
+            expected_fields: list[tuple[int, str, str]] = [
+                (1, "level", _format_number(item.level, 1)),
+                (2, "change", _format_change(item.change)),
+                (
+                    3,
+                    "precipitation",
+                    _format_precipitation(
+                        item.precipitation,
+                        item.precipitation_state,
+                    ),
+                ),
+                (9, "water_temperature_or_ice", _format_ice_and_temperature(item)),
+            ]
+
+            for column, field_name, value in (
+                (6, "maximum_level", item.maximum_level),
+                (7, "average_level", item.average_level),
+                (8, "minimum_level", item.minimum_level),
+            ):
+                if value is not None:
+                    expected_fields.append((column, field_name, _format_number(value, 0)))
+
+            for column, field_name, expected in expected_fields:
+                actual = _normalize_cell_text(target.cells[column].text)
+                expected_normalized = _normalize_cell_text(expected)
+                checked += 1
+                region_checked += 1
+                if actual == expected_normalized:
+                    matched += 1
+                    region_matched += 1
+                    continue
+                mismatches.append(
+                    {
+                        "region": region.key,
+                        "station_index": item.station_index,
+                        "station_name": item.station_name,
+                        "field": field_name,
+                        "expected": expected_normalized,
+                        "actual": actual,
+                    }
+                )
+
+        by_region[region.key] = {
+            "checked": region_checked,
+            "matched": region_matched,
+        }
+
+    if checked != EXPECTED_WORD_FIELDS:
+        raise RuntimeError(
+            "Кількість контрольованих Word-полів змінилася: "
+            f"очікується {EXPECTED_WORD_FIELDS}, отримано {checked}."
+        )
+    if mismatches:
+        first = mismatches[0]
+        raise RuntimeError(
+            "Word-звірка не пройдена: "
+            f"{matched}/{checked}. Перша розбіжність: "
+            f"{first['region']} / {first['station_index']} / {first['field']}: "
+            f"очікується «{first['expected']}», отримано «{first['actual']}»."
+        )
+
+    return {
+        "expected": EXPECTED_WORD_FIELDS,
+        "checked": checked,
+        "matched": matched,
+        "mismatched": len(mismatches),
+        "by_region": by_region,
+    }
 
 def _archive_report(db_path: Path) -> dict[str, Any]:
     connection = sqlite3.connect(db_path)
@@ -271,11 +484,19 @@ def validate(work_dir: Path, samples: int) -> dict[str, Any]:
     product_files = _product_files(work_dir / "results")
     archive_first = _archive_report(work_dir / "hydro_archive.sqlite")
     _assert_control_result(archive_first, product_files)
+    word_fields = _verify_word_fields(
+        work_dir / "hydro_archive.sqlite",
+        product_files,
+    )
 
     repeat_seconds, _ = _run(_full_command(work_dir))
     archive_repeat = _archive_report(work_dir / "hydro_archive.sqlite")
     product_files_repeat = _product_files(work_dir / "results")
     _assert_control_result(archive_repeat, product_files_repeat)
+    _verify_word_fields(
+        work_dir / "hydro_archive.sqlite",
+        product_files_repeat,
+    )
     idempotent = archive_first["counts"] == archive_repeat["counts"]
     if not idempotent:
         raise RuntimeError("Повторний запуск змінив кількість записів SQLite.")
@@ -317,6 +538,7 @@ def validate(work_dir: Path, samples: int) -> dict[str, Any]:
         "offline_archive_product_count": len(archive_offline_files),
         "offline_database_product_count": len(database_offline_files),
         "archive": archive_first,
+        "word_fields": word_fields,
     }
 
 
@@ -329,7 +551,7 @@ def main() -> int:
         type=Path,
         help=(
             "Нова папка результатів; за замовчуванням створюється "
-            "у тимчасовому каталозі."
+            "у validation_results/ у корені проєкту."
         ),
     )
     parser.add_argument(
@@ -342,15 +564,22 @@ def main() -> int:
     if args.samples < 1:
         parser.error("--samples має бути не менше 1")
 
-    work_dir = args.work_dir or Path(
-        tempfile.mkdtemp(prefix="hydrobulletin-regression-")
-    )
-    if args.work_dir is None:
-        # ``validate`` очікує ще не створену папку.
-        work_dir.rmdir()
+    if args.work_dir is not None:
+        work_dir = args.work_dir
+    else:
+        validation_root = PROJECT_DIR / "validation_results"
+        validation_root.mkdir(parents=True, exist_ok=True)
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        work_dir = validation_root / f"regression_{timestamp}"
+        suffix = 1
+        while work_dir.exists():
+            work_dir = validation_root / f"regression_{timestamp}_{suffix}"
+            suffix += 1
+
+    work_dir = work_dir.resolve()
 
     try:
-        report = validate(work_dir.resolve(), args.samples)
+        report = validate(work_dir, args.samples)
     except (OSError, RuntimeError, sqlite3.Error) as exc:
         print(f"ПОМИЛКА: {exc}", file=sys.stderr)
         return 1
@@ -362,6 +591,10 @@ def main() -> int:
     )
     print("HydroBulletin — регресійна перевірка: OK")
     print(f"Звіт: {report_path}")
+    print(
+        "Word-звірка: "
+        f"{report['word_fields']['matched']}/{report['word_fields']['checked']}"
+    )
     print(
         "Середній час свіжого запуску: "
         f"{report['benchmark']['mean_seconds']} с"
